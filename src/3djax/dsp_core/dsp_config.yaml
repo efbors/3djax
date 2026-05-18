@@ -1,0 +1,82 @@
+# dsp_config.yaml
+system:
+  target_simulation_duration: 10.0e-6 # [s] approx
+  baud_rate: 100.0e+9
+  # Tsym = 1/baud_rate 100Gbd
+  # baud_rate: 1/Tsym   #  [Hz] 100 GBaud (1/UI)
+  os_factor: 8          # Analog Oversampling relative to baud rate
+  # Tana = Tsym/os_factor # analog sample
+  digital_streams: 64
+  # Tdig = Tsym * digital_streams - e.g. 1.5625GHz
+  digital_block_size: 24 # block processing
+  # Tblk = Tdig * digital_block_size
+
+
+tx:
+  # negative tx ppm means symbols slighty longer
+  frequency_offset_ppm: -33.7  # relative to baud rate (UI);
+  jitter_rms_ui: 0.02
+  #start_delay: 12.39e-12   # [s] transmitter starts after this delay
+  start_delay: 12.39e-11   # [s] transmitter starts after this delay (! should during first Tblk)
+channel:
+  snr_db: 30.0          # Target Signal-to-Noise Ratio
+
+  # --- Impulse Response Knobs ---
+  response_mode: 'physical'   # 'ideal' (pass-thru) or 'physical'
+  #response_mode: 'ideal'   # 'ideal' (pass-thru) or 'physical'
+  # The Base Dispersion (The RC smearing)
+  #
+  # rise=1e-12 ModelA: (fall=5e-12); ModelB: fall=10e-12;  ModelC: fall=18e-12
+  tau_rise: 1.5e-12      # [s] (1.5 ps) Controls how fast the pulse peaks
+  tau_fall: 15.0e-12     # [s] (18.0 ps) Controls how long the tail drags out
+
+  # The Reflections
+  pkg_weight: -0.0          # Normal: -0.1
+  stub_weight: 0.0         # Normal: 0.08
+  conn_weight: 0.0         # Normal: 0.12
+
+  # NEXT
+  insertion_loss_db: 0.0
+  next_isolation_db: 100.0
+  num_aggressors: 1
+
+#  snr_db: 28.0          # Target Signal-to-Noise Ratio
+#  ppm_offset: 1.0       # Clock drift (leave 0 for Genie timing)
+#  # NEXT
+#  insertion_loss_db: 30.0
+#  next_isolation_db: 45.0
+#  num_aggressors: 3
+rx:
+  frequency_offset_ppm: 57.9  # relative to baud rate
+  jitter_rms_ui: 0.02
+  adc_quantization_enob: 5.7
+
+  # AGC
+  agc:
+    agc_target_power: 0.5
+    agc_alpha_hot: 0.2
+    agc_alpha_cold: 0.02
+    current_vga_gain: 1.0
+    squelch_threshold: 0.05
+
+  # Analog Phase Interpolator
+  pi_resolution: 64 # coarse phase out of this many offsets within a symbol
+  pi_eval_block_size: 100 # [symbols]
+
+  # ADC and Rx gains
+  # ADC will saturate any input outside [-ADC_input_max,ADC_input_max]
+  ADC_input_max: 8.0
+  ADC_enob: 5.6
+
+  rx_sequencer:
+    - SIG_DETECT: 1
+    - AGC_COLD: 3
+    - COARSE_PHASE: 2
+    - RX_GAINS: 3
+    - TRAINING_FFE: 4
+    - TRACKING_MLSE: 1
+    - DATA: -1
+
+
+  ffe_taps: 21          # Number of T-spaced FFE taps
+  mu: 2.0e-4            # LMS Step Size
