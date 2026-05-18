@@ -1,6 +1,6 @@
 # 3djax: Explorations of a 200Gbps DCI transceiver in JAX.
 
-[View the Architecture Presentation (PDF)](docs/200G_DCI Lane Architecture.pdf.pdf)
+**[View the Architecture Presentation (PDF)](docs/200G_DCI_Lane_Architecture.pdf)**
 
 > Two-level explorations:
 * Search for Inner/Outer coding solutions to go from 1e-3 to 1e-12 BER in AWGN.
