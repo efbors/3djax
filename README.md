@@ -20,11 +20,11 @@ source ~/venvs/venv3.12-3djax/bin/activate
 ## Overview
 The first part of the project combines an inner LDPC code with an outer BCH. Each encoder/decoder pair is analyzed separately first, and together second. We explore the influence of algorithms and arithmetic on LDPC, and the balance and tradeoffs involved in transferring compute complexity between BCH and LDPC, as well as between different processing blocks.
 
-### LDPC (`/ldpc`)
+### LDPC (`src/3djax/ldpc`)
 Contains the LDPC56 encoding and decoding implementations along with QPSK modulation. 
 * **Validation:** The Bit Error Rate (BER) vs. Signal-to-Noise Ratio (SNR) performance of our implementation has been directly compared against a standard MATLAB reference. The fully vectorized JAX implementation perfectly matches the MATLAB reference curve while enabling massive simulation throughput.
 
-### DSP Core (`/dsp_core`)
+### DSP Core (`src/3djax/dsp_core`)
 Implements the digital signal processing front-end and receiver pipeline, including ADC, AGC, Feed-Forward Equalization (FFE), and phase detection.
 * **Analysis:** The DSP tests (`test_dsp_core.py`) generate time-domain plots to visualize signal recovery, equalizer convergence, and phase tracking behavior.
 * **Training Timeline:**
@@ -46,5 +46,5 @@ gantt
     Steady-State Tracking   :a4, after a3, 40
 ```
 
-### BCH (`/bch`)
+### BCH (`src/3djax/bch`)
 Handles the outer BCH error-correction coding (`bch_encode.py`, `bch_decode.py`). This layer cleans up the residual errors left over by the inner LDPC decoder, driving the final performance down to the 1e-12 BER target.
