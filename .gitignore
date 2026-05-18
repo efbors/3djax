@@ -1,0 +1,13 @@
+# .gitignore
+cmake-build-*/
+.idea/
+__pycache__/
+*.asv
+.DS_Store
+**/ .DS_Store
+# Ignore any directory named .temp anywhere in the project
+**/.temp/
+# Ignore any zip files
+*.zip
+# Ignore any directories starting with an underscore anywhere in the project
+_*/

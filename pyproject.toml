@@ -1,0 +1,36 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "3djax"
+version = "0.1.0"
+description = "3DJAX: Explorations of a 400Gbps lane."
+readme = "README.md"
+requires-python = ">=3.12"
+authors = [
+    { name = "Felix Bors", email = "felix.bors@aibcore.com" }
+]
+
+
+dependencies = [
+    # JAX with CUDA 12 support. This will install the appropriate NVIDIA
+    # CUDA runtime component wheels automatically.
+    "jax[cuda12]>=0.4.30",
+
+    # CuPy for CUDA 13.x. The [ctk] extra installs NVIDIA CUDA Toolkit
+    # component wheels automatically, so users do not need to install
+    # a system CUDA toolkit manually.
+    "cupy-cuda13x[ctk]>=14.0.0",
+
+    "tensorboard",
+    "tensorboard-plugin-profile",
+    "equinox",
+    "numpy>=1.26.0",
+    "scipy>=1.11.0",
+    "matplotlib>=3.8.0",
+    "PyYAML",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
