@@ -11,6 +11,7 @@ from frequency_synthesizer import FrequencySynthesizer
 from a_phase_interp import APhaseInterp
 from adc import ADC
 from rx_gains import RxGains
+from utils.plot_sig import *
 
 """  main state machine
 0.0 : DETECT_SIG
@@ -76,26 +77,121 @@ def main():
         'TRACKING_MLSE': 2.5,
         'DATA': 3.0
     }
+    # Convert the list of dicts into a single flat dict
+    sequencer_dict = {k: v for d in config['rx']['rx_sequencer'] for k, v in d.items()}
 
     print("-- Generating Tx Data...")
     tx = Transmitter(config)
-    symbols, tx_analog, sync_block = tx.generate_signal()
+    symbols, tx_waveform, tx_analog, sync_block = tx.generate_signal()
 
     print("-- Apply the Channel...")
     channel = Channel200GHard(config)
     channel_out = channel.process(tx_analog)
 
-    # Analog Front End (AGC + CTLE)
-    # print("-- Receiver: AFE...")
-    afe = AnalogFrontEnd(config)
+    # Generate the local baud rate frequency (oversampled);  this contains
+    # the effect of rx frequency offset and jitter (from the yaml configuration).
+    fsyn = FrequencySynthesizer(config, len(channel_out))
+    rx_in_analog = fsyn.gen_rx_analog(channel_out)
+
+    # Declare a marker to show on plots the state of the receiver (definitions above).
+    sm_state = np.zeros(len(rx_in_analog), dtype=np.float16)
+
+    if False:
+        # Note on plots: the RX CDR (clock and data recovery) and timing jobs are to take
+        # the blue plot (rx analog)  and warp it to recover the red (tx_waveform)
+        start_ix = 0
+        win_len = 3000
+        label_w = 'tx_waveform @ ideal Fs'
+        label_tx = 'tx transmitted on the line @ Fs+tx_ppm'
+        label_rx = 'rx received from channel @ Fs+rx_ppm'
+        title = f"Transmitter/Channel/Receiver with frequency offset and jitter."
+        plot_time_domain(start_ix, win_len, tx_waveform,
+                         label_w, tx_analog, label_tx, rx_in_analog, label_rx, title)
+
     agc = AGC(config)
 
-    # -- SIG_DETECT;
-    # Check for signal detection only during the first block
-    first_block_out = channel_out[:int(Tblk_ana)]
+    #
+    # --- Signal Detect
+    #  look only during the first block (simulation constraint)
+    #
+
+    first_block_out = rx_in_analog[:int(Tblk_ana)]
     agc_alpha_hot = config['rx']['agc']['agc_alpha_hot']
-    rx_agc_out, gains = agc.process(first_block_out, agc_alpha_hot)
-    sync_index, _ = agc.detect_sync_sequence(rx_agc_out, os_factor, sync_block)
+    agc.set_alpha(agc_alpha_hot)
+    rx_agc_out, gain_hist = agc.process(first_block_out)
+    sync_index, matched_filt_out = agc.detect_sync_sequence(rx_agc_out, os_factor, sync_block)
+    # alignment marker detected, cool the AGC;
+    # note: sync_index marks the end of the detection (the end of the second
+    # sync marker)
+    agc_cool_t = sequencer_dict['AGC_COLD']
+    sm_state[sync_index:] = STATE_MAP['AGC_COLD']
+    agc_alpha_cold = config['rx']['agc']['agc_alpha_cold']
+    agc.set_alpha(agc_alpha_cold)
+    rx_index = sync_index  # move the cursor to the end of the sync bloc
+
+    # Freeze AGC; reprocess the AGC from the new cursor with frozen AGC
+    current_agc_gain = agc.get_current_gain()
+    rx_agc_out = rx_in_analog * current_agc_gain
+
+    if False:
+        start_ix = 0
+        win_len = 10000
+        plot_time_domain(start_ix, win_len, rx_in_analog, 'Rx in',
+                         rx_agc_out, 'rx_agc_out',
+                         # gain_hist, 'gains',
+                         # 0.1 * matched_filt_out, 'matched filter out',
+                         # sm_state, 'state',
+                         title='Detect sync')
+
+    #
+    # --- Coarse Phase Alignment
+    #
+
+    api = APhaseInterp(config)  # analog phase interpolator
+    # Run the vector math to find the best UI fractional offset
+    pi_eval_block_size = config['rx']['api']['pi_eval_block_size']
+    coarse_phase_seg = rx_agc_out[rx_index:rx_index + pi_eval_block_size * os_factor]
+
+    # Get the optimal fractional analog offset
+    variances, best_offset = api.calc_coarse_phase(coarse_phase_seg)
+    # Round the fractional offset to the nearest integer analog sample
+    rx_index += int(np.round(best_offset))  # adjust cursor to the best eye opening
+
+    if False:
+        start_ix = rx_index
+        win_len = 500
+        take_times = np.arange(start_ix, start_ix + win_len, os_factor)
+        plot_acq_times(start_ix, win_len, rx_agc_out, 'Rx in',
+                       take_times,
+                       title='Acquisition Times')
+
+    #
+    # -- RX GAINS
+    # calculate the post ADC gains to land the levels on the reference
+    # PAM4 levels
+
+    rxg = RxGains(config)
+    rxg_block_len = 200  # samples at baud rate
+    rxg_block = rx_agc_out[rx_index:rx_index + rxg_block_len * os_factor]
+
+    # Calculate optimal post-ADC digital gain
+    digital_rx_gain = rxg.calc_post_adc_gain(rxg_block)
+    rx_index += rxg_block_len * os_factor
+    rx_agc_out[rx_index:] *= digital_rx_gain  # Apply the gain
+
+    if False:
+        start_ix = rx_index - 512
+        win_len = 4000
+        test_timing_and_gains = rx_agc_out[start_ix:start_ix + win_len]
+        take_times = np.arange(start_ix, start_ix + win_len, os_factor)
+        plot_acq_times(start_ix, win_len, rx_agc_out, 'Rx gains and timing',
+                       take_times,
+                       title='Acquisition Times')
+
+    #
+    # -START OF THE BLOCK PROCESSING - act on rx_agc_out (it is scaled and
+    # sampling phase has been coarse corrected
+    #
 
     # Calculate how many full blocks fit from the detection point to the end of the simulation
     remaining_samples = len(channel_out) - sync_index
@@ -109,13 +205,8 @@ def main():
     # generate Fout (e.g.100Gbd) for the entire experiment;  this signal would
     # normally be shared by all the lanes,  there is no feedback to it.
     agc_alpha_cold = config['rx']['agc']['agc_alpha_cold']
-    freq_synth = FrequencySynthesizer(config, len(channel_out_blk))
-    rx_sample_times = freq_synth.gen_sample_times(len(channel_out_blk))
 
     # init state machine
-    sm_state = np.zeros(len(channel_out_blk), dtype=np.float32)
-
-    api = APhaseInterp(config)  # analog phase interpolator
 
     # Start of the block processing
 
@@ -129,7 +220,6 @@ def main():
     sm_state[signal_start_analog_idx:] = 0.5
 
     print("-- Receiver: Phase Acquisition (Genie Search)...")
-
 
     # Find the exact analog index where the dead-air ends and the signal begins
     # (sd_flag is 0.75 when active, so we look for > 0.5)

@@ -145,4 +145,25 @@ class Transmitter:
         tx_analog = np.zeros_like(tx_upsampled_ps, dtype=np.float32)
         valid = (t >= 0.0) & (t <= (N - 1))
         tx_analog[valid] = cs(t[valid]).astype(np.float32)
-        return symbols, tx_analog, sync_block
+
+        if False:
+            #
+            #  Note: for a negative tx_ppm:  the sampling frquency on the line is faster
+            # (the signal is generated at a lower frequecy Ftx < Fideal
+            #  the ideal waveform (red) should lead the tx signal on the line (green)
+            #
+            import matplotlib.pyplot as plt
+            start_offset = 150000
+            start =  start_offset
+            winlen = 300
+            plt.figure(figsize=(18, 8))
+            plt.plot(tx_waveform[start:start + winlen], 'r', label='tx_waveform @ ideal Fs')
+            plt.plot(tx_analog[start:start + winlen], 'g', label='tx transmitted on the line @ Fs+ppm')
+            plt.title(f"Transmitter with frequency offset and jitter.\n tx_ppm = {self.tx_ppm}")
+            plt.xlabel("Analog Indices")
+            plt.ylabel("V")
+            plt.legend(loc='upper right')
+            plt.grid(True)
+            plt.show(block=False)
+
+        return symbols, tx_waveform,  tx_analog, sync_block

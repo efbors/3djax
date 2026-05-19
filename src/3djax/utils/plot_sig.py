@@ -67,6 +67,67 @@ class DJPlot:
         plt.grid(True)
         plt.show()
 
+
+def plot_acq_times(start_ix, win_len,
+                   wave_0, label_0,
+                   take_times,
+                   title=None):
+    plt.figure(figsize=(18, 8))
+
+    # Define the window
+    end_ix = start_ix + win_len
+    x_vals = np.arange(start_ix, end_ix)
+    wave_slice = wave_0[start_ix:end_ix]
+
+    # Plot the main analog waveform
+    plt.plot(x_vals, wave_slice, label=label_0, color='blue')
+
+    # Filter take_times to only include those within the current plot window
+    take_times = np.asarray(take_times)
+    valid_take_times = take_times[(take_times >= start_ix) & (take_times < end_ix)]
+
+    # Add the vertical lines
+    if len(valid_take_times) > 0:
+        ymin, ymax = plt.ylim()  # Match the height of the waveform
+        plt.vlines(valid_take_times, ymin=ymin, ymax=ymax,
+                   colors='red', linestyles='dashed', alpha=0.7,
+                   label='Sample Times')
+
+    # Formatting
+    if title:
+        plt.title(title)
+    plt.xlabel('Analog Indices')
+    plt.ylabel('Amplitude')
+    plt.grid(True)
+    plt.legend(loc='upper right')
+    plt.tight_layout()
+    plt.show(block=False)
+
+
+def plot_time_domain(start_ix, win_len,
+                     wave_0, label_0=None,
+                     wave_1=None, label_1=None,
+                     wave_2=None, label_2=None,
+                     title=None
+                     ):
+    plt.figure(figsize=(18, 8))
+    lbl_0 = label_0 if label_0 else 'wave_0'
+    plt.plot(wave_0[start_ix:start_ix + win_len], 'r', label=lbl_0)
+    if wave_1 is not None:
+        lbl_1 = label_1 if label_1 else 'wave_1'
+        plt.plot(wave_1[start_ix:start_ix + win_len], 'g', label=lbl_1)
+    if wave_2 is not None:
+        lbl_2 = label_2 if label_2 else 'wave_2'
+        plt.plot(wave_2[start_ix:start_ix + win_len], 'b', label=lbl_2)
+    title = title if title else 'Time Domain Plot'
+    plt.title(title)
+    plt.xlabel("Analog Indices")
+    plt.ylabel("V")
+    plt.legend(loc='upper right')
+    plt.grid(True)
+    plt.show(block=False)
+
+
 def plot_sig():
     # --- INSERTED BLOCK END ---
     if True:

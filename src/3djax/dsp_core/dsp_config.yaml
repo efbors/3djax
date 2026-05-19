@@ -15,16 +15,16 @@ system:
 
 tx:
   # negative tx ppm means symbols slighty longer
-  frequency_offset_ppm: -33.7  # relative to baud rate (UI);
+  frequency_offset_ppm: -33.0  # relative to baud rate (UI);
   jitter_rms_ui: 0.02
   #start_delay: 12.39e-12   # [s] transmitter starts after this delay
   start_delay: 843.9e-12   # [s] transmitter starts after this delay (! should during first Tblk)
 channel:
-  snr_db: 20.0          # Target Signal-to-Noise Ratio
+  snr_db: 40.0          # Target Signal-to-Noise Ratio
 
   # --- Impulse Response Knobs ---
-  response_mode: 'physical'   # 'ideal' (pass-thru) or 'physical'
-  #response_mode: 'ideal'   # 'ideal' (pass-thru) or 'physical'
+  #response_mode: 'physical'   # 'ideal' (pass-thru) or 'physical'
+  response_mode: 'ideal'   # 'ideal' (pass-thru) or 'physical'
   # The Base Dispersion (The RC smearing)
   #
   # rise=1e-12 ModelA: (fall=5e-12); ModelB: fall=10e-12;  ModelC: fall=18e-12
@@ -48,22 +48,23 @@ channel:
 #  next_isolation_db: 45.0
 #  num_aggressors: 3
 rx:
-  frequency_offset_ppm: 57.9  # relative to baud rate
+  frequency_offset_ppm: 57.9  # 57.9  # relative to baud rate
   jitter_rms_ui: 0.02
   adc_quantization_enob: 5.7
 
   # AGC
   agc:
-    agc_window_size: 64
-    agc_target_power: 1.0
-    agc_alpha_hot: 0.5
-    agc_alpha_cold: 0.003
-    current_vga_gain: 1.0
-    squelch_threshold: 0.05
+    agc_window_size: 768 # in oversampled samples
+    agc_target_power: 1.
+    agc_alpha_hot: 0.3
+    agc_alpha_cold: 0.0  # freeze AGC
+    current_vga_gain: 0.0
+
 
   # Analog Phase Interpolator
-  pi_resolution: 64 # coarse phase out of this many offsets within a symbol
-  pi_eval_block_size: 100 # [symbols]
+  api:
+    pi_resolution: 64 # coarse phase out of this many offsets within a symbol
+    pi_eval_block_size: 100 # [symbols]
 
 
   # ADC and Rx gains
@@ -72,10 +73,12 @@ rx:
   ADC_enob: 5.6
 
   rx_sequencer:
+    # max Tblk to spend in each state
     - SIG_DETECT: 1
     - AGC_COLD: 3
     - COARSE_PHASE: 2
     - RX_GAINS: 3
+    - FINE_PHASE: 1
     - TRAINING_FFE: 4
     - TRACKING_MLSE: 1
     - DATA: -1
