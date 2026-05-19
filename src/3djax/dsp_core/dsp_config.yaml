@@ -8,18 +8,19 @@ system:
   # Tana = Tsym/os_factor # analog sample
   digital_streams: 64
   # Tdig = Tsym * digital_streams - e.g. 1.5625GHz
-  digital_block_size: 24 # block processing
-  # Tblk = Tdig * digital_block_size
 
+  #  blocks are processed serialy to mimic adaptation
+  digital_block_size: 24 # block processing in digital clocks;
+  # Tblk = Tdig * digital_block_size
 
 tx:
   # negative tx ppm means symbols slighty longer
   frequency_offset_ppm: -33.7  # relative to baud rate (UI);
   jitter_rms_ui: 0.02
   #start_delay: 12.39e-12   # [s] transmitter starts after this delay
-  start_delay: 12.39e-11   # [s] transmitter starts after this delay (! should during first Tblk)
+  start_delay: 843.9e-12   # [s] transmitter starts after this delay (! should during first Tblk)
 channel:
-  snr_db: 30.0          # Target Signal-to-Noise Ratio
+  snr_db: 20.0          # Target Signal-to-Noise Ratio
 
   # --- Impulse Response Knobs ---
   response_mode: 'physical'   # 'ideal' (pass-thru) or 'physical'
@@ -53,15 +54,17 @@ rx:
 
   # AGC
   agc:
-    agc_target_power: 0.5
-    agc_alpha_hot: 0.2
-    agc_alpha_cold: 0.02
+    agc_window_size: 64
+    agc_target_power: 1.0
+    agc_alpha_hot: 0.5
+    agc_alpha_cold: 0.003
     current_vga_gain: 1.0
     squelch_threshold: 0.05
 
   # Analog Phase Interpolator
   pi_resolution: 64 # coarse phase out of this many offsets within a symbol
   pi_eval_block_size: 100 # [symbols]
+
 
   # ADC and Rx gains
   # ADC will saturate any input outside [-ADC_input_max,ADC_input_max]

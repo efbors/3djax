@@ -1,70 +1,94 @@
 import numpy as np
+import matplotlib.pyplot as plt
 
 
 class AGC:
+    """ Block AGC
+
+    """
+
     def __init__(self, config):
         agc_cfg = config['rx']['agc']
         self.target_power = float(agc_cfg['agc_target_power'])
         self.alpha_hot = float(agc_cfg['agc_alpha_hot'])
         self.alpha_cold = float(agc_cfg['agc_alpha_cold'])
         self.squelch_threshold = float(agc_cfg['squelch_threshold'])
+        self.ADC_input_max = config['rx']['ADC_input_max']
+        self.window_size = config['rx']['agc']['agc_window_size']
 
-        # State variables carried across blocks
-        self.current_vga_gain = float(agc_cfg['current_vga_gain'])
-        self.is_locked = False
+        # state
+        self.current_vga_gain = 1.0
 
-        # System parameters
-        self.window_size = int(config['system'].get('agc_window_size'))
-
-    def set_alpha(self, alpha):
-        self.current_alpha = alpha
-
-    def process(self, analog_block):
+    def process(self, time_series_in, alpha):
         """
-        Takes a 1D analog block, reshapes it into non-overlapping windows,
-        and updates the stateful VGA gain once per window.
+        Takes a 1D time series at Fdig, reshapes it into non-overlapping windows,
+        and
         """
-        block_len = len(analog_block)
 
-        # Guard: Ensure the block divides perfectly by the window size
+        block_len = len(time_series_in)
         assert block_len % self.window_size == 0, f"Block length {block_len} not divisible by window size {self.window_size}"
         num_windows = block_len // self.window_size
 
         # Reshape into (num_windows, window_size)
-        windows = analog_block.reshape(num_windows, self.window_size)
-
-        # Pre-allocate the output arrays
-        leveled_windows = np.zeros_like(windows)
-        gain_trajectory = np.zeros(num_windows, dtype=np.float32)
+        windows_in = time_series_in[:num_windows * block_len].reshape(num_windows, self.window_size)
+        time_series_out = np.empty_like(windows_in)
+        gain_hist = np.empty(num_windows, dtype=np.float32)
 
         # The Windowed Execution Loop (Future jax.lax.scan target)
         for w_idx in range(num_windows):
-            window_data = windows[w_idx]
+            window_data = windows_in[w_idx]
 
-            # Calculate power E[x^2]
-            pwr = np.mean(window_data ** 2)
+            pwr = np.mean(window_data ** 2)  # Calculate power E[x^2]
+            pwr_sat = max(pwr, 1e-12)
+            ideal_gain = np.sqrt(self.target_power / pwr_sat)
 
-            if pwr > (self.squelch_threshold ** 2):
-                # Calculate the mathematically ideal gain for this specific window
-                safe_pwr = max(pwr, 1e-12)
-                ideal_gain = np.sqrt(self.target_power / safe_pwr)
+            # Stateful IIR update
+            self.current_vga_gain = (1.0 - alpha) * self.current_vga_gain + (alpha * ideal_gain)
 
-                # Gear Shifting: Hot vs Cold convergence
-                # (For now, a simple threshold to switch gears. In hardware, 
-                # this might be controlled by a timer or state machine)
-                error_ratio = abs(ideal_gain - self.current_vga_gain) / self.current_vga_gain
-                current_alpha = self.alpha_hot if error_ratio > 0.1 else self.alpha_cold
-
-                # Stateful IIR update
-                self.current_vga_gain = (1.0 - current_alpha) * self.current_vga_gain + (current_alpha * ideal_gain)
-
-            # Apply the active gain uniformly across this 256-sample slice
-            leveled_windows[w_idx] = window_data * self.current_vga_gain
+            agc_out_blk = window_data * self.current_vga_gain
+            # Apply ADC saturation / hard clipping
+            time_series_out[w_idx] = np.clip(agc_out_blk, -self.ADC_input_max, self.ADC_input_max)
 
             # Record state for the plot
-            gain_trajectory[w_idx] = self.current_vga_gain
+            gain_hist[w_idx] = self.current_vga_gain
 
-        # Flatten back to a 1D contiguous block
-        leveled_block_out = leveled_windows.ravel()
+        time_series_out = time_series_out.ravel()
+        return time_series_out, gain_hist
 
-        return leveled_block_out, gain_trajectory
+    def detect_sync_sequence(self, rx_analog, os_factor, sync_block):
+        """
+        Pure Digital Matched Filter.
+        Uses a normalized rectangular template of the sync block.
+        """
+
+        # Upsample the raw PAM4 symbols (Rectangular pulses / ZOH)
+        template = np.repeat(sync_block, os_factor).astype(np.float32)
+
+        # Zero-mean and Normalize to unit energy
+        template -= np.mean(template)
+        norm_factor = np.linalg.norm(template)
+        if norm_factor > 0:
+            template /= norm_factor
+
+        # Perform the cross-correlation
+        correlation = np.correlate(rx_analog, template, mode='valid')
+
+        # Find the exact alignment index
+        sync_idx = int(np.argmax(np.abs(correlation)))
+
+        if False:
+            #  Plot the result
+            import matplotlib.pyplot as plt
+            plt.figure(figsize=(18, 8))
+
+            plt.plot(np.abs(correlation), 'g', label='Matched Filter Output')
+            plt.axvline(sync_idx, color='magenta', linestyle='--', linewidth=2, label=f'Sync Lock @ Index {sync_idx}')
+
+            plt.title("Normalized Matched Filter: Optimal Cross-Correlation")
+            plt.xlabel("Analog Indices")
+            plt.ylabel("Correlation Magnitude")
+            plt.legend(loc='upper right')
+            plt.grid(True)
+            plt.show(block=False)
+
+        return sync_idx, correlation

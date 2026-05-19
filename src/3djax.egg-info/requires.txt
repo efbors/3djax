@@ -1,0 +1,9 @@
+jax[cuda12]>=0.4.30
+cupy-cuda13x[ctk]>=14.0.0
+tensorboard
+tensorboard-plugin-profile
+equinox
+numpy>=1.26.0
+scipy>=1.11.0
+matplotlib>=3.8.0
+PyYAML
