@@ -1,5 +1,6 @@
 # dsp_config.yaml
 system:
+  modulation: 'PAM-4'
   target_simulation_duration: 10.0e-6 # [s] approx
   baud_rate: 100.0e+9
   # Tsym = 1/baud_rate 100Gbd
@@ -13,25 +14,64 @@ system:
   digital_block_size: 24 # block processing in digital clocks;
   # Tblk = Tdig * digital_block_size
 
+
+tools:
+
+  enable_gui: True
+  # the 3 windows on the left
+  win_resolutin_x: 1000
+  plot_resolution_y: 700
+  trace_resolution_y: 500
+  spec_resolution_y: 300
+  #scalar column on the right
+  scalar_resolution_x: 300
+
+
+  refresh_rate_hz: 50       # Default GUI consumption rate
+  display_loop_duration: 10 # [s]
+  monitor_persistence: 1 # [s]
+
+  # Phosphorus P31 parameters
+  enable_phosphor_bloom: True
+  p31_grid_size_pix: 31 # square kernel (combines the core and halo)
+  core_gaussian_sd: 0.5 # the standard deviation of the sharp, intease electron beam
+  halo_gaussian_sd: 6.0  # standard dev. of the difuse phosphor glow
+  kernel_blend_core: 0.5  # 0.7 means 70% core, 30% halo
+
+
 tx:
   # negative tx ppm means symbols slighty longer
-  frequency_offset_ppm: -33.0  # relative to baud rate (UI);
-  jitter_rms_ui: 0.02
+  frequency_offset_ppm: -1.0  # relative to baud rate (UI);
+  jitter_rms_ui: 0.0 # 0.02
   #start_delay: 12.39e-12   # [s] transmitter starts after this delay
   start_delay: 843.9e-12   # [s] transmitter starts after this delay (! should during first Tblk)
+
+# -------------------------------------
 channel:
-  snr_db: 40.0          # Target Signal-to-Noise Ratio
+  snr_db: 65.0          # Target Signal-to-Noise Ratio
+
+  block_processing_size: 32768  # samples at oversampled analog rate
 
   # --- Impulse Response Knobs ---
-  #response_mode: 'physical'   # 'ideal' (pass-thru) or 'physical'
-  response_mode: 'ideal'   # 'ideal' (pass-thru) or 'physical'
+  response_mode: 'physical'   # 'ideal' (pass-thru) or 'physical'
+  #response_mode: 'ideal'   # 'ideal' (pass-thru) or 'physical'
   # The Base Dispersion (The RC smearing)
-  #
+
   # rise=1e-12 ModelA: (fall=5e-12); ModelB: fall=10e-12;  ModelC: fall=18e-12
-  tau_rise: 1.5e-12      # [s] (1.5 ps) Controls how fast the pulse peaks
-  tau_fall: 15.0e-12     # [s] (18.0 ps) Controls how long the tail drags out
+  tau_fall_dynamic_en: False # if False,
+  tau_fall_var_percent: 20  # 20 means tau_fall baseline will slowly expand to 120% of
+  # it's length and contract to 80% of its length.
+  tau_fall_period: 30.0e-6 # [s] thermal drift period in seconds
+
+  tau_rise: 0.5e-12      # [s] (1.5 ps) Controls how fast the pulse peaks
+  tau_fall: 3.0e-12     # [s] (18.0 ps) Controls how long the tail drags out
 
   # The Reflections
+  conn_dynamic_en: False # enable mechanical vibration effect
+  conn_weight_var: 0.05   # peak-to-peak amplitude modulation; 0.05 means if conn_weight is 0.1
+  # it will oscillate betwee 0.05 and 0.15
+  conn_period: 2.7e-6  # [s]
+
   pkg_weight: -0.0          # Normal: -0.1
   stub_weight: 0.0         # Normal: 0.08
   conn_weight: 0.0         # Normal: 0.12
@@ -39,7 +79,7 @@ channel:
   # NEXT
   insertion_loss_db: 0.0
   next_isolation_db: 100.0
-  num_aggressors: 1
+  num_aggressors: 0 # e.g. 1 (how many other lanes aggress this one)
 
 #  snr_db: 28.0          # Target Signal-to-Noise Ratio
 #  ppm_offset: 1.0       # Clock drift (leave 0 for Genie timing)
@@ -48,29 +88,9 @@ channel:
 #  next_isolation_db: 45.0
 #  num_aggressors: 3
 rx:
-  frequency_offset_ppm: 57.9  # 57.9  # relative to baud rate
-  jitter_rms_ui: 0.02
+  frequency_offset_ppm: 1.9  # 57.9  # relative to baud rate
+  jitter_rms_ui: 0.0  # 0.02
   adc_quantization_enob: 5.7
-
-  # AGC
-  agc:
-    agc_window_size: 768 # in oversampled samples
-    agc_target_power: 1.
-    agc_alpha_hot: 0.3
-    agc_alpha_cold: 0.0  # freeze AGC
-    current_vga_gain: 0.0
-
-
-  # Analog Phase Interpolator
-  api:
-    pi_resolution: 64 # coarse phase out of this many offsets within a symbol
-    pi_eval_block_size: 100 # [symbols]
-
-
-  # ADC and Rx gains
-  # ADC will saturate any input outside [-ADC_input_max,ADC_input_max]
-  ADC_input_max: 8.0
-  ADC_enob: 5.6
 
   rx_sequencer:
     # max Tblk to spend in each state
@@ -84,5 +104,35 @@ rx:
     - DATA: -1
 
 
-  ffe_taps: 21          # Number of T-spaced FFE taps
-  mu: 2.0e-4            # LMS Step Size
+  # AGC
+  agc:
+    agc_window_size: 768 # in oversampled samples
+    agc_target_power: 1.
+    agc_alpha_hot: 0.3
+    agc_alpha_cold: 0.0  # freeze AGC
+    current_vga_gain: 0.0
+
+  # ADC and Rx gains
+  # ADC will saturate any input outside [-ADC_input_max,ADC_input_max]
+  ADC:
+    clip_limit: 8.0
+    enob: 20 # 5.6
+    physical_bits: 32 # 8  # data path width
+
+  # Analog Phase Interpolator
+  api:
+    pi_resolution: 64 # coarse phase out of this many offsets within a symbol
+    pi_eval_block_size: 100 # [symbols]
+
+  # implement a joint channel estimation and timing, block based equalizer
+  # (please see docs for more details)
+  FFE:
+    ffe_taps: 21  # Number of T-spaced FFE taps
+    precursor_percent: 40  # e.g. 15% precursor, 85% postcursor for a heavy tail channel
+    mu: 2.0e-4  # LMS Step Size
+    alpha: 1e-4  # regularization setup (Edge Repulsion)
+
+  timing:
+    alpha: 0.
+
+

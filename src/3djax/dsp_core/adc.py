@@ -3,18 +3,15 @@ import numpy as np
 
 class ADC:
     def __init__(self, config):
-        rx_cfg = config['rx']
-        # The true signal-to-noise quality metric
-        self.enob = float(rx_cfg.get('ADC_enob', rx_cfg.get('adc_quantization_enob', 5.6)))
+        adc_cfg = config['rx']['ADC']
 
         # The hard clipping limits (+/- Volts)
-        self.clip_limit = float(rx_cfg.get('ADC_input_max', 8.0))
+        self.clip_limit = adc_cfg['clip_limit']
+        self.physical_bits = adc_cfg['physical_bits']
+        self.enob = min(adc_cfg['enob'], float(self.physical_bits))
+        self.num_levels = int(2 ** self.physical_bits)
 
-        # The actual physical hardware datapath (Defaulting to 8 bits if not in yaml)
-        self.physical_bits = int(rx_cfg.get('adc_physical_bits', 8))
-        self.num_levels = int(2 ** self.physical_bits)  # Exactly 256 levels
-
-        # --- ENOB Noise Calculation (IEEE Standard) ---
+        # ENOB Noise Calculation (IEEE Standard)
         # Calculate required SNR in dB
         snr_db = 6.02 * self.enob + 1.76
         snr_linear = 10 ** (snr_db / 10.0)
@@ -26,16 +23,14 @@ class ADC:
         self.noise_variance = signal_power / snr_linear
         self.noise_std = np.sqrt(self.noise_variance)
 
-    def process(self, analog_samples, pre_gain=1.0):
+    def process(self, analog_samples):
         """
         Simulates physical ADC by injecting ENOB-equivalent noise, 
         clipping, and binning to the physical bit depth.
         """
-        # Apply analog pre-gain (VGA target)
-        scaled = analog_samples * pre_gain
 
-        # Inject ENOB-equivalent internal noise BEFORE quantization
-        noisy_signal = scaled + np.random.normal(0, self.noise_std, size=scaled.shape)
+        # Inject ENOB-equivalent internal noise before quantization
+        noisy_signal = analog_samples + np.random.normal(0, self.noise_std, size=analog_samples.shape)
 
         # Hard Clip (Saturation)
         clipped = np.clip(noisy_signal, -self.clip_limit, self.clip_limit)

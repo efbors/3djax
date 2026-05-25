@@ -12,7 +12,7 @@ class AGC:
         self.target_power = float(agc_cfg['agc_target_power'])
         self.alpha_hot = float(agc_cfg['agc_alpha_hot'])
         self.alpha_cold = float(agc_cfg['agc_alpha_cold'])
-        self.ADC_input_max = config['rx']['ADC_input_max']
+        self.clip_limit = config['rx']['ADC']['clip_limit']
         self.window_size = config['rx']['agc']['agc_window_size']
 
         # state
@@ -54,7 +54,7 @@ class AGC:
             self.current_vga_gain = np.clip(self.current_vga_gain, 1e-4, 100.0)
 
             # Store the clipped output and state
-            time_series_out[w_idx] = np.clip(agc_out_blk, -self.ADC_input_max, self.ADC_input_max)
+            time_series_out[w_idx] = np.clip(agc_out_blk, -self.clip_limit, self.clip_limit)
 
             start_idx = w_idx * self.window_size
             end_idx = start_idx + self.window_size
@@ -64,41 +64,6 @@ class AGC:
 
         return time_series_out, gain_hist
 
-    # def process(self, time_series_in, alpha):
-    #     """
-    #     Takes a 1D time series at Fdig, reshapes it into non-overlapping windows,
-    #     and
-    #     """
-    #
-    #     block_len = len(time_series_in)
-    #     assert block_len % self.window_size == 0, f"Block length {block_len} not divisible by window size {self.window_size}"
-    #     num_windows = block_len // self.window_size
-    #
-    #     # Reshape into (num_windows, window_size)
-    #     windows_in = time_series_in[:num_windows * block_len].reshape(num_windows, self.window_size)
-    #     time_series_out = np.empty_like(windows_in)
-    #     gain_hist = np.empty(num_windows, dtype=np.float32)
-    #
-    #     # The Windowed Execution Loop (Future jax.lax.scan target)
-    #     for w_idx in range(num_windows):
-    #         window_data = windows_in[w_idx]
-    #
-    #         pwr = np.mean(window_data ** 2)  # Calculate power E[x^2]
-    #         pwr_sat = max(pwr, 1e-12)
-    #         ideal_gain = np.sqrt(self.target_power / pwr_sat)
-    #
-    #         # Stateful IIR update
-    #         self.current_vga_gain = (1.0 - alpha) * self.current_vga_gain + (alpha * ideal_gain)
-    #
-    #         agc_out_blk = window_data * self.current_vga_gain
-    #         # Apply ADC saturation / hard clipping
-    #         time_series_out[w_idx] = np.clip(agc_out_blk, -self.ADC_input_max, self.ADC_input_max)
-    #
-    #         # Record state for the plot
-    #         gain_hist[w_idx] = self.current_vga_gain
-    #
-    #     time_series_out = time_series_out.ravel()
-    #     return time_series_out, gain_hist
 
     def detect_sync_sequence(self, rx_analog, os_factor, sync_block):
         """
@@ -121,19 +86,5 @@ class AGC:
         # Find the exact alignment index
         sync_idx = int(np.argmax(np.abs(correlation)))
         sync_idx += len(template)
-        if False:
-            #  Plot the result
-            import matplotlib.pyplot as plt
-            plt.figure(figsize=(18, 8))
-
-            plt.plot(np.abs(correlation), 'g', label='Matched Filter Output')
-            plt.axvline(sync_idx, color='magenta', linestyle='--', linewidth=2, label=f'Sync Lock @ Index {sync_idx}')
-
-            plt.title("Normalized Matched Filter: Optimal Cross-Correlation")
-            plt.xlabel("Analog Indices")
-            plt.ylabel("Correlation Magnitude")
-            plt.legend(loc='upper right')
-            plt.grid(True)
-            plt.show(block=False)
 
         return sync_idx, correlation

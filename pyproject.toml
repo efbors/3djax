@@ -14,22 +14,18 @@ authors = [
 
 
 dependencies = [
-    # JAX with CUDA 12 support. This will install the appropriate NVIDIA
-    # CUDA runtime component wheels automatically.
+    # JAX with CUDA 12 support.
     "jax[cuda12]>=0.4.30",
-
-    # CuPy for CUDA 13.x. The [ctk] extra installs NVIDIA CUDA Toolkit
-    # component wheels automatically, so users do not need to install
-    # a system CUDA toolkit manually.
-    "cupy-cuda13x[ctk]>=14.0.0",
-
-    "tensorboard",
-    "tensorboard-plugin-profile",
     "equinox",
+    # Core numerical processing
     "numpy>=1.26.0",
     "scipy>=1.11.0",
-    "matplotlib>=3.8.0",
+    # Logging and config
     "PyYAML",
+    # Basic static plotting (if you still need simple offline graphs)
+    "matplotlib>=3.8.0",
+    # The Hardware-Accelerated Visualization Engine
+    "eyemon @ git+https://github.com/efbors/eyemon.git",
 ]
 
 [tool.setuptools.packages.find]

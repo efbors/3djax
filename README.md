@@ -48,3 +48,8 @@ gantt
 
 ### BCH (`src/3djax/bch`)
 Handles the outer BCH error-correction coding (`bch_encode.py`, `bch_decode.py`). This layer cleans up the residual errors left over by the inner LDPC decoder, driving the final performance down to the 1e-12 BER target.
+
+
+### Monitor
+scope inspired by 
+https://github.com/RandomDude4/PhosPersPlot

@@ -2,25 +2,18 @@ import argparse
 import yaml
 import os
 from pathlib import Path
-import numpy as np
+
 from transmitter import Transmitter
 from channel_200G_hard import Channel200GHard
-from analog_front_end import AnalogFrontEnd
 from agc import AGC
 from frequency_synthesizer import FrequencySynthesizer
 from a_phase_interp import APhaseInterp
 from adc import ADC
+from ffe import FFE
+from timing import Timing
 from rx_gains import RxGains
 from utils.plot_sig import *
-
-"""  main state machine
-0.0 : DETECT_SIG
-0.5 : AGC_COLD
-1.0 : COARSE_PHASE
-1.5 : RX_GAINS
-2.0 : TRAINING_FFE
-2.5 : TRACKING (MMPD + dPI + FFE continuous loop)
-"""
+from utils.dsp_probe import DspProbe
 
 
 def main():
@@ -57,6 +50,12 @@ def main():
     if 'Tblk' not in config['system']:
         config['system']['Tblk'] = Tblk  # digital block duration (e.g. 38MHz)
 
+    # setup the modulation
+    modulation = config['system']['modulation']
+    assert modulation == 'PAM-4', f"Error: modulation {modulation} not supported"
+    if 'ideal_levels' not in config['system']:
+        config['system']['ideal_levels'] = np.array([-3.0, -1.0, 1.0, 3.0])
+
     start_delay = float(config['tx'].get('start_delay', 0.0))
     assert start_delay < Tblk, f"start_delay:{start_delay} >= Tblk:{Tblk}"
 
@@ -80,9 +79,19 @@ def main():
     # Convert the list of dicts into a single flat dict
     sequencer_dict = {k: v for d in config['rx']['rx_sequencer'] for k, v in d.items()}
 
+    probe = DspProbe(config)
+
+    #
+    # -- START OF SIGNAL PROCESSING
+    #
+
     print("-- Generating Tx Data...")
     tx = Transmitter(config)
     symbols, tx_waveform, tx_analog, sync_block = tx.generate_signal()
+
+    if False:
+        probe.animate_sweep('tx_analog', tx_analog, seg_size=os_factor, nrow=64, fps=30,
+                            loop_duration=10, gain=60.0, start_index=1000, ext_samples=1 * os_factor)
 
     print("-- Apply the Channel...")
     channel = Channel200GHard(config)
@@ -93,20 +102,12 @@ def main():
     fsyn = FrequencySynthesizer(config, len(channel_out))
     rx_in_analog = fsyn.gen_rx_analog(channel_out)
 
+    if True:
+        probe.animate_sweep('rx_in_analog', rx_in_analog, seg_size=os_factor, nrow=64, fps=30,
+                            loop_duration=10, gain=60.0, start_index=1000, ext_samples=1.5 * os_factor)
+
     # Declare a marker to show on plots the state of the receiver (definitions above).
     sm_state = np.zeros(len(rx_in_analog), dtype=np.float16)
-
-    if False:
-        # Note on plots: the RX CDR (clock and data recovery) and timing jobs are to take
-        # the blue plot (rx analog)  and warp it to recover the red (tx_waveform)
-        start_ix = 0
-        win_len = 3000
-        label_w = 'tx_waveform @ ideal Fs'
-        label_tx = 'tx transmitted on the line @ Fs+tx_ppm'
-        label_rx = 'rx received from channel @ Fs+rx_ppm'
-        title = f"Transmitter/Channel/Receiver with frequency offset and jitter."
-        plot_time_domain(start_ix, win_len, tx_waveform,
-                         label_w, tx_analog, label_tx, rx_in_analog, label_rx, title)
 
     agc = AGC(config)
 
@@ -177,7 +178,6 @@ def main():
     # Calculate optimal post-ADC digital gain
     digital_rx_gain = rxg.calc_post_adc_gain(rxg_block)
     rx_index += rxg_block_len * os_factor
-    rx_agc_out[rx_index:] *= digital_rx_gain  # Apply the gain
 
     if False:
         start_ix = rx_index - 512
@@ -188,32 +188,45 @@ def main():
                        take_times,
                        title='Acquisition Times')
 
+    rx_in = digital_rx_gain * rx_agc_out[rx_index:]  # Apply the gain
+
+    if True:
+        probe.animate_sweep('rx_in', signal=rx_in, seg_size=os_factor, nrow=64, fps=30,
+                            loop_duration=10, gain=60.0, start_index=1000, ext_samples=1.5 * os_factor)
+
     #
     # -START OF THE BLOCK PROCESSING - act on rx_agc_out (it is scaled and
     # sampling phase has been coarse corrected
     #
 
-    # Calculate how many full blocks fit from the detection point to the end of the simulation
+    # approximate of the end of the simulation; because the analog phase interpolator
+    # can advance beyond the existing rx samples
+    adc = ADC(config)
+    ffe = FFE(config)
+    timing = Timing(config)
     remaining_samples = len(channel_out) - sync_index
     num_full_blks = remaining_samples // int(Tblk_ana)
-    end_idx = sync_index + (num_full_blks * int(Tblk_ana))
+    timing_offset = 0.0
 
-    # Isolate an integer number of Tblk long samples aligned exactly to the detection point
-    channel_out_blk = channel_out[sync_index:end_idx]
-    # channel_out_blk = channel_out_blk.reshape(num_full_blks, int(Tblk_ana))
-
-    # generate Fout (e.g.100Gbd) for the entire experiment;  this signal would
-    # normally be shared by all the lanes,  there is no feedback to it.
-    agc_alpha_cold = config['rx']['agc']['agc_alpha_cold']
-
-    # init state machine
-
-    # Start of the block processing
+    block_len = digital_streams * digital_block_size
 
     for blk_idx in range(num_full_blks):
-        # AGC
-        # DEMUX
-        pass
+        # analog phase interpolator (extract fractionally interpolated samples)
+        rx_block_api = api.sample_block(rx_in, rx_index, timing_offset, block_len, os_factor)
+
+        # ADC - quantize
+        ffe_in = adc.process(rx_block_api)
+
+        # Note: no need for demuxing for the reference code; this is an optimization for later
+        # demux (1:64) - round robin;  adjacent rows receive adjacent samples in time;
+        # rx_ffe_in = np.reshape(rx_blk_quant, (digital_block_size, digital_streams)).T
+
+        # -- FFE; calculate both phase error (for a_phase_interap) and the shortened
+        # channel for the Viterbi MLSE
+        ffe_out, phase_error, com_error = ffe.calc(ffe_in)
+
+        # -- Update timing
+        timing_offset = timing(phase_error, com_error)
 
     # STATE 0.0 -> 0.5: Wait for Signal & AGC Settle
     signal_start_analog_idx = np.argmax(sd_flag > 0.5)

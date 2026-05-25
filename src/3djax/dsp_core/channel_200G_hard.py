@@ -1,6 +1,15 @@
-import matplotlib.pyplot as plt
+""" channel_200G_hard.py
+ - 1. at the simplest this simulates a Linear-Time-Invariant channel.
+        (tau_fall_dynamic_en:False and
+ - 2. simulate Thermal Dielectrich Shift. This is simulated by adding
+     a slow, low-frequency modifier;  essentially increase dynamically
+     tau_fall below. This expends/contracts the channel tail and exercises
+     the FFE adaptation process.
+
+ - 3. Mechanical Micro-vibrations;  introduce amplitude modulation of
+    conn_weight and idx_conn (the connector reflection index);
+"""
 import numpy as np
-from scipy.interpolate import CubicSpline
 from scipy.ndimage import gaussian_filter1d
 
 
@@ -16,8 +25,28 @@ class Channel200GHard:
         self.next_isolation_db = config['channel']['next_isolation_db']
         self.num_aggressors = config['channel']['num_aggressors']
 
+        # --- Dynamic Channel State & Knobs ---
+        self.current_time = 0.0  # Master timekeeper for the channel
+
+        self.tau_fall_dynamic_en = config['channel'].get('tau_fall_dynamic_en', False)
+        self.tau_fall_var_percent = float(config['channel'].get('tau_fall_var_percent', 0.0))
+        self.tau_fall_period = float(config['channel'].get('tau_fall_period', 1.0))
+        self.nominal_tau_fall = float(config['channel']['tau_fall'])
+
+        self.conn_dynamic_en = config['channel'].get('conn_dynamic_en', False)
+        self.conn_weight_var = float(config['channel'].get('conn_weight_var', 0.0))
+
+        self.conn_period = float(config['channel'].get('conn_period', 1.0))
+        self.nominal_conn_weight = float(config['channel']['conn_weight'])
+
         # Build the impulse response upon initialization
         self.h = self._gen_impulse_response()
+
+        # --- Overlap-Save FFT Setup ---
+        self.L = int(config['channel'].get('block_processing_size', 32768))
+        self.M = len(self.h)  # Expected to be 500 based on t = np.arange(0, 500)
+        self.N_fft = self.L + self.M - 1
+
 
     def process(self, tx_analog):
         """
@@ -35,8 +64,55 @@ class Channel200GHard:
         linear_attenuation = 10 ** (-self.insertion_loss_db / 20.0)
         tx_attenuated = tx_analog * linear_attenuation
 
-        # Convolve with physical channel (Dispersion & Reflections)
-        rx_conv = np.convolve(tx_attenuated, self.h, mode='full')[:len(tx_attenuated)]
+        # --   Time-Variant Overlap-Save using Pure Numpy FFT
+        if not (self.tau_fall_dynamic_en or self.conn_dynamic_en):
+            # Fast path for static LTI channel
+            rx_conv = np.convolve(tx_attenuated, self.h, mode='full')[:len(tx_attenuated)]
+        else:
+            original_len = len(tx_attenuated)
+
+            # Pad the front with M - 1 zeros (historical state for block 0)
+            padded_tx = np.pad(tx_attenuated, (self.M - 1, 0), mode='constant')
+
+            # Pad the tail so the remaining data is a perfect multiple of L
+            remainder = original_len % self.L
+            if remainder != 0:
+                pad_end = self.L - remainder
+                padded_tx = np.pad(padded_tx, (0, pad_end), mode='constant')
+
+            num_blocks = (len(padded_tx) - self.M + 1) // self.L
+
+            # Master array for the concatenated output
+            rx_conv_full = np.zeros(num_blocks * self.L, dtype=np.float32)
+
+            for k in range(num_blocks):
+                # Extract chunk of size N_fft
+                start_idx = k * self.L
+                end_idx = start_idx + self.N_fft
+                chunk = padded_tx[start_idx:end_idx]
+
+                # Generate dynamic impulse response for this specific moment
+                self.h = self._gen_impulse_response()
+
+                # FFT-based Circular Convolution
+                H = np.fft.fft(self.h, n=self.N_fft)
+                X = np.fft.fft(chunk, n=self.N_fft)
+                Y = H * X
+                y_chunk = np.real(np.fft.ifft(Y))
+
+                # Overlap-Save: Discard the first M-1 aliased samples
+                valid_samples = y_chunk[self.M - 1:]
+
+                # Store exactly L clean samples in the master array
+                out_start = k * self.L
+                out_end = out_start + self.L
+                rx_conv_full[out_start:out_end] = valid_samples
+
+                # Advance the master clock by the duration of the valid block
+                self.current_time += self.L * self.dt
+
+            # Trim the final padded tail to perfectly match the exact input length
+            rx_conv = rx_conv_full[:original_len]
 
         # Simulate Realistic NEXT (Near-End Crosstalk)
         crosstalk_noise = np.zeros_like(rx_conv)
@@ -80,9 +156,21 @@ class Channel200GHard:
         mode = self.config['channel'].get('response_mode', 'physical')
         pkg_weight = float(self.config['channel']['pkg_weight'])
         stub_weight = float(self.config['channel']['stub_weight'])
-        conn_weight = float(self.config['channel']['conn_weight'])
         tau_rise = self.config['channel']['tau_rise']
-        tau_fall = self.config['channel']['tau_fall']
+
+        # --- Calculate Dynamic tau_fall ---
+        if self.tau_fall_dynamic_en:
+            swing = self.nominal_tau_fall * (self.tau_fall_var_percent / 100.0)
+            tau_fall = self.nominal_tau_fall + swing * np.sin(2 * np.pi * self.current_time / self.tau_fall_period)
+        else:
+            tau_fall = self.nominal_tau_fall
+
+        # --- Calculate Dynamic conn_weight ---
+        if self.conn_dynamic_en:
+            conn_weight = self.nominal_conn_weight + self.conn_weight_var * np.sin(
+                2 * np.pi * self.current_time / self.conn_period)
+        else:
+            conn_weight = self.nominal_conn_weight
 
         t = np.arange(0, 500) * self.dt  # 125 UI span
 
@@ -133,6 +221,7 @@ class Channel200GHard:
 
     @staticmethod
     def plot_eye(rx_signal, os_factor, title="PAM4 Eye Diagram", delay_ui=0):
+        import matplotlib.pyplot as plt
         """A high-performance 2D-histogram eye diagram plotter."""
         samples_per_trace = os_factor * 2
         trim_len = (len(rx_signal) - delay_ui * os_factor) // samples_per_trace * samples_per_trace
