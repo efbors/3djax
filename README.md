@@ -20,6 +20,15 @@ source ~/venvs/venv3.12-3djax/bin/activate
 ## Overview
 The first part of the project combines an inner LDPC code with an outer BCH. Each encoder/decoder pair is analyzed separately first, and together second. We explore the influence of algorithms and arithmetic on LDPC, and the balance and tradeoffs involved in transferring compute complexity between BCH and LDPC, as well as between different processing blocks.
 
+### EyeMon: Hardware-Accelerated Signal Visualization
+
+EyeMon is a high-performance, GPU-accelerated signal monitoring tool designed for visualizing complex multi-level waveforms and multi-level quadrature constellations. 
+
+<p align="center">
+  <img src="assets/combo_plot.gif" alt="PAM4 and 16-QAM Visualizations" width="100%">
+</p>
+---
+
 ### LDPC (`src/3djax/ldpc`)
 Contains the LDPC56 encoding and decoding implementations along with QPSK modulation. 
 * **Validation:** The Bit Error Rate (BER) vs. Signal-to-Noise Ratio (SNR) performance of our implementation has been directly compared against a standard MATLAB reference. The fully vectorized JAX implementation perfectly matches the MATLAB reference curve while enabling massive simulation throughput.
