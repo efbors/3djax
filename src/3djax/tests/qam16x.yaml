@@ -178,6 +178,8 @@ channel: # RefDisRes (reflections, dispersion, resonance)
   f_res_ghz_min: 25.0
   f_res_ghz_max: 45.0
 
+
+  # =====
   # CROSSTALK (NEXT)
   # Lower isolation = worse crosstalk. 100dB is effectively perfect isolation.
   next_isolation_db_min: 40.0 # 40.0
@@ -190,26 +192,34 @@ channel: # RefDisRes (reflections, dispersion, resonance)
   snr_db_min: 26.0
   snr_db_max: 32.0
 
-
+#-----------------------------------------------
+#
+#                   RECEIVER
+#
+#-----------------------------------------------
 
 rx:
-  frequency_offset_ppm: 1.9  # 57.9  # relative to baud rate
-  jitter_rms_ui: 0.0  # 0.02
-  adc_quantization_enob: 5.7
+  # ==== Rx Analog Front-End (AFE) & Transimpedance Amplifier (TIA)
+  afe:
+    3db_bandwidth_ghz_min: 45.0      # [GHz] Anti-aliasing filter bottleneck
+    3db_bandwidth_ghz_max: 75.0      # [GHz] Premium Rx trace layout
+    filter_order_min: 3
+    filter_order_max: 5
+    agc_target_amplitude: 0.8        # Target normalized amplitude to feed the ADC
 
-  # ADC and Rx gains
-  # ADC will saturate any input outside [-ADC_input_max,ADC_input_max]
-  ADC:
-    clip_limit: 8.0
-    enob: 20 # 5.6
-    physical_bits: 32 # 8  # data path width
+  # ==== ADC Digital Physics & Time-Interleaving (TI) Mismatches
+  adc:
+    physical_bits: 8                 # Rigid data path width
+    clip_papr_db_min: 6.0            # Severe soft-clipping at the TIA/ADC boundary
+    clip_papr_db_max: 10.0           # Conservative clipping
 
-  # implement a joint channel estimation and timing, block based equalizer
-  # (please see docs for more details)
-  FFE:
-    ffe_taps: 21  # Number of T-spaced FFE taps
-    precursor_percent: 40  # e.g. 15% precursor, 85% postcursor for a heavy tail channel
-    mu: 2.0e-4  # LMS Step Size
-    alpha: 1e-4  # regularization setup (Edge Repulsion)
+    # Static Non-Linearities
+    inl_sigma_max: 1.5               # Maximum standard deviation of cumulative curve warping [LSB]
+    dnl_sigma_max: 0.8               # Maximum standard deviation of localized step errors [LSB]
 
+    # Time-Interleaving (TI) Impairments (Simulates an array of interleaved slower ADCs)
+    ti_interleave_factor: 4          # Number of parallel ADC cores (e.g., 4 cores running at 50 GSa/s)
+    ti_gain_mismatch_pct_max: 3.0    # [%] Core-to-core gain mismatch
+    ti_skew_fs_max: 150.0            # [fs] Core-to-core sampling clock skew
+    ti_dc_offset_mv_max: 5.0         # [mV] Core-to-core DC offset drift
 

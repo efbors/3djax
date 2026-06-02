@@ -48,6 +48,8 @@ class ChannelRefDisRes:
         # System parameters
         self.baud_rate = float(config['system']['baud_rate'])
         self.os_factor = int(config['system']['os_factor'])
+        self.batch_size = int(config['system']['batch_size'])
+
         self.fs = self.baud_rate * self.os_factor
         self.dt = 1 / self.fs
         self.ui_sec = 1.0 / self.baud_rate
@@ -59,11 +61,20 @@ class ChannelRefDisRes:
         """
         c = self.config['channel']
 
-        if c['mode'] == 'ideal':
-            h_a = h_p = np.ones(1, dtype=np.complex64)  # Dirac Delta
-            return h_a, h_p
-
         draw = lambda key: np.random.uniform(c[f"{key}_min"], c[f"{key}_max"], size=self.B)
+
+        # These are values which apply even if the channel is "ideal"
+
+        self.insertion_loss_db = draw("insertion_loss_db")
+        self.next_isolation_db = draw("insertion_loss_db")
+        self.num_aggressors = draw("num_aggressors")
+        self.snr_db = draw("snr_db")
+
+        if c['mode'] == 'ideal':
+            # Ideal Dirac Delta impulse response, properly batched as (B, 1)
+            h_a = np.ones((self.batch_size, 1), dtype=np.complex64)
+            h_p = np.ones((self.batch_size, 1), dtype=np.complex64)
+            return h_a, h_p
 
         # 1. Base Parameters (Anchor)
         tau_rise_a = draw("tau_rise")
@@ -207,48 +218,45 @@ class ChannelRefDisRes:
         danco = skdim.id.DANCo().fit(X)
         print(f"DANCo Estimated ID: {danco.dimension_:.2f} (Took {time.time() - t0:.2f}s)")
 
-    if __name__ == "__main__":
-        estimate_h_dimension("channel_config.yaml", num_samples=10000)
-
-    def process(self, tx_analog_batch):
+    def process(self, tx_analog_batch, h):
         """
-        Processes a batch of Tx waveforms through the channel pipeline.
+        Processes a batch of complex Tx waveforms through the channel pipeline.
         Optimized for JAX/XLA via a single, full-frame linear FFT convolution.
 
-        :param tx_analog_batch: 2D numpy array of shape (B, N_samples)
-        :return: 2D numpy array of the final Rx waveform
+        :param tx_analog_batch: 2D complex64 numpy array of shape (B, N_samples)
+        :param h: 2D float32 numpy array representing the channel impulse response
+        :return: 2D complex64 numpy array of the final Rx waveform
         """
         B, N_samples = tx_analog_batch.shape
-        M = self.h.shape[1]
+        M = h.shape[1]
 
-        #  BROADBAND ATTENUATION
+        # BROADBAND ATTENUATION
 
         linear_loss = 10 ** (-self.insertion_loss_db[:, np.newaxis] / 20.0)
         rx_attenuated = tx_analog_batch * linear_loss
 
-        # FULL-FRAME FFT CONVOLUTION
-
+        # FULL-FRAME FFT CONVOLUTION (Complex Signal * Real Channel)
         # To perform true linear convolution via FFT without circular wrap-around
         # (time aliasing), the FFT size must be exactly N + M - 1.
         full_len = N_samples + M - 1
-        N_fft = 2 ** np.ceil(np.log2(full_len)).astype(int)
-        # Compute batched FFTs. The 'n' argument automatically zero-pads the inputs.
+        N_fft = 2 ** int(np.ceil(np.log2(full_len)))
+
+        # Compute batched FFTs. 'rx_attenuated' is complex, so X is complex.
         X = np.fft.fft(rx_attenuated, n=N_fft, axis=-1)
-        H = np.fft.fft(self.h, n=N_fft, axis=-1)
+        H = np.fft.fft(h, n=N_fft, axis=-1)
 
         # Multiply in frequency domain
         Y = X * H
 
-        # IFFT back to time domain
+        # IFFT back to time domain. Since Y is complex, rx_conv_full is complex.
         rx_conv_full = np.fft.ifft(Y, n=N_fft, axis=-1)
 
         # Truncate the mathematical tail to maintain the exact input array size
         rx_conv = rx_conv_full[:, :N_samples]
 
-        # NEAR-END CROSSTALK (NEXT)
-
+        # NEAR-END CROSSTALK (NEXT) - Complex Baseband Aggressors
         num_symbols = (N_samples // self.os_factor) + 2
-        crosstalk_noise = np.zeros_like(rx_conv)
+        crosstalk_noise = np.zeros_like(rx_conv, dtype=np.complex64)
         next_linear_gain = 10 ** (-self.next_isolation_db[:, np.newaxis] / 20.0)
 
         max_aggressors = int(np.max(self.num_aggressors))
@@ -256,25 +264,104 @@ class ChannelRefDisRes:
         for i in range(max_aggressors):
             active_mask = (self.num_aggressors > i)[:, np.newaxis].astype(np.float32)
 
-            agg_syms = np.random.choice([-3.0, -1.0, 1.0, 3.0], size=(B, num_symbols))
+            # Generate complex QAM aggressor symbols
+            agg_i = np.random.choice([-3.0, -1.0, 1.0, 3.0], size=(B, num_symbols))
+            agg_q = np.random.choice([-3.0, -1.0, 1.0, 3.0], size=(B, num_symbols))
+            agg_syms = agg_i + 1j * agg_q
+
+            # Upsample
             agg_up = np.repeat(agg_syms, self.os_factor, axis=-1)[:, :N_samples]
 
+            # Capacitive coupling derivative of the complex aggressor
             agg_diff = np.diff(agg_up, axis=-1)
-            agg_diff = np.insert(agg_diff, 0, 0.0, axis=-1)
+            agg_diff = np.insert(agg_diff, 0, 0.0j, axis=-1)
 
             crosstalk_noise += (agg_diff * next_linear_gain * active_mask)
 
         rx_with_xtalk = rx_conv + crosstalk_noise
 
-        #  ADD AWGN (THERMAL NOISE)
-
+        # ADD AWGN (Circularly Symmetric Complex Thermal Noise)
+        # np.var on a complex array correctly computes the variance of the magnitude
         sig_power = np.var(rx_conv, axis=-1, keepdims=True)
         snr_linear = 10 ** (self.snr_db[:, np.newaxis] / 10.0)
-        noise_power = sig_power / snr_linear
 
-        awgn = np.random.normal(0.0, 1.0, size=rx_with_xtalk.shape).astype(np.float32)
-        awgn = awgn * np.sqrt(noise_power)
+        # Total required noise power
+        total_noise_power = sig_power / snr_linear
+
+        # Generate independent Gaussian noise for I and Q, splitting the power in half
+        awgn_real = np.random.normal(0.0, 1.0, size=rx_with_xtalk.shape).astype(np.float32)
+        awgn_imag = np.random.normal(0.0, 1.0, size=rx_with_xtalk.shape).astype(np.float32)
+        awgn = (awgn_real + 1j * awgn_imag) * np.sqrt(total_noise_power / 2.0)
 
         rx_final = rx_with_xtalk + awgn
 
-        return rx_final
+        return rx_final.astype(np.complex64)
+
+    # def process(self, tx_analog_batch):
+    #     """
+    #     Processes a batch of Tx waveforms through the channel pipeline.
+    #     Optimized for JAX/XLA via a single, full-frame linear FFT convolution.
+    #
+    #     :param tx_analog_batch: 2D numpy array of shape (B, N_samples)
+    #     :return: 2D numpy array of the final Rx waveform
+    #     """
+    #     B, N_samples = tx_analog_batch.shape
+    #     M = self.h.shape[1]
+    #
+    #     #  BROADBAND ATTENUATION
+    #
+    #     linear_loss = 10 ** (-self.insertion_loss_db[:, np.newaxis] / 20.0)
+    #     rx_attenuated = tx_analog_batch * linear_loss
+    #
+    #     # FULL-FRAME FFT CONVOLUTION
+    #
+    #     # To perform true linear convolution via FFT without circular wrap-around
+    #     # (time aliasing), the FFT size must be exactly N + M - 1.
+    #     full_len = N_samples + M - 1
+    #     N_fft = 2 ** np.ceil(np.log2(full_len)).astype(int)
+    #     # Compute batched FFTs. The 'n' argument automatically zero-pads the inputs.
+    #     X = np.fft.fft(rx_attenuated, n=N_fft, axis=-1)
+    #     H = np.fft.fft(self.h, n=N_fft, axis=-1)
+    #
+    #     # Multiply in frequency domain
+    #     Y = X * H
+    #
+    #     # IFFT back to time domain
+    #     rx_conv_full = np.fft.ifft(Y, n=N_fft, axis=-1)
+    #
+    #     # Truncate the mathematical tail to maintain the exact input array size
+    #     rx_conv = rx_conv_full[:, :N_samples]
+    #
+    #     # NEAR-END CROSSTALK (NEXT)
+    #
+    #     num_symbols = (N_samples // self.os_factor) + 2
+    #     crosstalk_noise = np.zeros_like(rx_conv)
+    #     next_linear_gain = 10 ** (-self.next_isolation_db[:, np.newaxis] / 20.0)
+    #
+    #     max_aggressors = int(np.max(self.num_aggressors))
+    #
+    #     for i in range(max_aggressors):
+    #         active_mask = (self.num_aggressors > i)[:, np.newaxis].astype(np.float32)
+    #
+    #         agg_syms = np.random.choice([-3.0, -1.0, 1.0, 3.0], size=(B, num_symbols))
+    #         agg_up = np.repeat(agg_syms, self.os_factor, axis=-1)[:, :N_samples]
+    #
+    #         agg_diff = np.diff(agg_up, axis=-1)
+    #         agg_diff = np.insert(agg_diff, 0, 0.0, axis=-1)
+    #
+    #         crosstalk_noise += (agg_diff * next_linear_gain * active_mask)
+    #
+    #     rx_with_xtalk = rx_conv + crosstalk_noise
+    #
+    #     #  ADD AWGN (THERMAL NOISE)
+    #
+    #     sig_power = np.var(rx_conv, axis=-1, keepdims=True)
+    #     snr_linear = 10 ** (self.snr_db[:, np.newaxis] / 10.0)
+    #     noise_power = sig_power / snr_linear
+    #
+    #     awgn = np.random.normal(0.0, 1.0, size=rx_with_xtalk.shape).astype(np.float32)
+    #     awgn = awgn * np.sqrt(noise_power)
+    #
+    #     rx_final = rx_with_xtalk + awgn
+    #
+    #     return rx_final
