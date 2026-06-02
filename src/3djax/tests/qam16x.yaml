@@ -1,0 +1,215 @@
+# qam16x.yaml
+# Target and goal is a frequency offset free Tx,Chan,Rx pipeline, batched to
+# optimize the FFE
+
+system:
+  modulation: 'QAM16'
+  batch_size: 1
+  payload_bits: 1944
+  target_simulation_duration: 10.0e-6 # [s] approx
+  baud_rate: 100.0e+9
+
+  # Tsym = 1/baud_rate 100Gbd
+  # baud_rate: 1/Tsym   #  [Hz] 100 GBaud (1/UI)
+  os_factor: 8          # Analog Oversampling relative to baud rate
+  # Tana = Tsym/os_factor # analog sample
+  digital_streams: 64
+  # Tdig = Tsym * digital_streams - e.g. 1.5625GHz
+
+  #  blocks are processed serialy to mimic adaptation
+  digital_block_size: 24 # block processing in digital clocks;
+  # Tblk = Tdig * digital_block_size
+
+
+#-----------------------------------------------
+#
+#                   TRANSMITTER
+#
+#-----------------------------------------------
+
+tx:
+  # ==== DAC Digital Constraints vs. Metric-Driven ENOB
+  dac:
+    physical_bits: 8                 # Rigid data path width (e.g., 6, 7, or 8 bits)
+
+    # Peak-to-Average Power Ratio digital clipping before quantization
+    clip_papr_db_min: 5.5            # Severe clipping, forces high distortion but utilizes full DAC range
+    clip_papr_db_max: 9.0            # Conservative clipping, lower quantization noise but lowers overall power
+
+    # Static Non-Linearities (LSB variance across the R-2R ladder / current steering elements)
+    dnl_sigma_max: 0.8               # Maximum standard deviation of localized step errors [LSB]
+    inl_mu: 0.0                      # Mean overall curve bowing
+    inl_sigma_max: 1.5               # 1.5 Maximum standard deviation of cumulative curve warping [LSB]
+
+  # ==== Timing & Sampling Clock Deficiencies
+  clocking:
+    # High-frequency phase noise mapping to amplitude noise at high frequencies
+    random_jitter_rms_fs_min: 50.0   # [fs] Ultra-clean low-noise laboratory clock source
+    random_jitter_rms_fs_max: 350.0  # [fs] High-speed integrated transceiver PLL jitter floor
+
+    # Duty Cycle Distortion (DCD) and periodic power-supply injection
+    det_jitter_ui_min: 0.00          # Perfect clock symmetry
+    det_jitter_ui_max: 0.04          # [UI] Bounded peak-to-peak deterministic jitter
+
+    # Physical trace-length differences between I and Q paths hitting the IQ mixer/modulator
+    iq_skew_ps_min: -2.5             # [ps] Path skew favoring In-phase
+    iq_skew_ps_max: 2.5              # [ps] Path skew favoring Quadrature
+
+  # ==== In-Phase and Quadrature (I/Q) Analog Mismatches
+  iq_imbalance:
+    gain_db_mu: 0.0                  # Ideally balanced
+    gain_db_sigma_max: 0.8           # [dB] Variations in independent I vs Q analog driver paths
+
+    phase_deg_mu: 0.0                # Ideally perfectly orthogonal (90 degrees)
+    phase_deg_sigma_max: 4.0         # [deg] Deviation from quadrature orthogonality
+
+  # ==== Tx Analog Front-End (AFE) Frequency Response & Package Parasitics
+  afe_frequency_response:
+    # Severe bandwidth bottlenecking relative to  Nyquist limits
+    3db_bandwidth_ghz: 65.0      # [GHz] Premium high-frequency package trace layout
+    filter_order_min: 3              # Replicates variable roll-off rates of physical trace paths
+    filter_order_max: 5
+
+    # Package reflections and stub resonances before exiting the transmitter module
+    inband_ripple_db_max: 2.0        # Max magnitude peak-to-peak ripple caused by internal S21 mismatches
+    group_delay_ripple_ps_max: 4.0   # [ps] Phase distortion / non-linear group delay across the passband
+
+  # ==== RF Driver Amplifier (PA) Non-Linearities & Thermal Memory Effects
+  # Employs a complex-valued Volterra-style Memory Polynomial Model (MPM)
+  rf_driver:
+    poly_order_k: 5                  # Maximum odd non-linear order evaluated (Captures 3rd & 5th IMD)
+    memory_depth_m: 4                # Number of past oversampled analog steps affecting the current state
+
+    # Scaling factor for the AM/AM compression and AM/PM phase twisting
+    non_linear_coefficients_sigma: 0.15 # Controls the variance/severity of the non-linear driver transfer curve
+
+    # Driver output back-off (OBO). Lower means driving harder into saturation.
+    input_backoff_db_min: 1.0        # Heavily saturated driver, intense constellation warping
+    input_backoff_db_max: 6.0        # High linearity back-off, lower SNR but cleaner symbols
+
+  # ==== Electro-Optic Modulator (Mach-Zehnder Modulator) Physics
+  modulator:
+    # Drive voltage envelope normalized against the modulator's half-wave voltage (V_pi)
+    vpp_to_vpi_ratio_min: 0.4        # Linear zone operation, low optical modulation amplitude (OMA)
+    vpp_to_vpi_ratio_max: 0.9        # Drives deep into the non-linear sine-squared optical nulls
+
+    # DC bias loop controllers drifting away from the ideal quadrature/null point
+    bias_drift_pct_min: -8.0         # [% of V_pi] Negative phase offset error
+    bias_drift_pct_max: 8.0          # [% of V_pi] Positive phase offset error
+
+    # Finite optical extinction ratio due to asymmetric splitter/combiner branches inside the MZM
+    extinction_ratio_db_min: 16.0    # Poor extinction, highly blurred constellation centers
+    extinction_ratio_db_max: 28.0    # Highly isolated optical branches
+
+  # ==== Laser Optical Carrier & Noise Floor
+  carrier:
+    laser_linewidth_khz_min: 10.0    # [kHz] Low phase noise external cavity laser (ECL)
+    laser_linewidth_khz_max: 600.0   # [kHz] High phase noise integrated distributed feedback (DFB) laser
+
+    relative_intensity_noise_db_hz_min: -155.0 # [dB/Hz] Low intensity amplitude noise
+    relative_intensity_noise_db_hz_max: -135.0 # [dB/Hz] High intensity amplitude noise
+
+    # Baseline additive white Gaussian noise from thermal and shot noise inside the Tx AFE
+    tx_snr_db_min: 24.0              # Noisy Tx electronics floor
+    tx_snr_db_max: 36.0              # Clean Tx electronics floor
+
+
+#-----------------------------------------------
+#
+#                   CHANNEL
+#
+#-----------------------------------------------
+
+channel: # RefDisRes (reflections, dispersion, resonance)
+  mode: 'ideal'  # ideal turn off everything in the channel except the SNR (AWGN)
+  #mode: 'physical'
+  # Broadband attenuation - pure trace loss
+  insertion_loss_db_min: 10.0      # E.g., a short, high-quality chip-to-chip link
+  insertion_loss_db_max: 35.0      # E.g., a long, lossy backplane channel
+
+  # ==== Raw Channel (base dispertion + two delayed reflections + stub resonance)
+  # BASE DISPERSION (The RC smearing)
+  tau_rise_min: 0.1e-12      # [s] Controls how fast the pulse peaks
+  tau_rise_max: 0.5e-12      # [s]
+  tau_fall_min: 2.0e-12      # [s] Controls how long the tail drags out
+  tau_fall_max: 3.0e-12      # [s]
+
+  # ==== REFLECTIONS & DISTORTIONS
+  # --- STATISTICAL CASCADED MULTIPATH (Impedance Boundaries) ---
+
+  # The Poisson parameter (lambda).
+  # A lambda of 2.5 means most channels will have 2 or 3 major boundaries,
+  # but occasionally it will generate a complex channel with 6 or 7.
+  boundary_count_lambda: 3.0
+
+  # Reflection Coefficient (Gamma) distribution.
+  # Gamma represents the severity of the impedance mismatch (e.g., hitting a via or connector).
+  gamma_mu: 0.0                  # Mean is 0 (ideally 50 ohms)
+  gamma_sigma_min: 0.02          # Standard deviation for a high-quality link
+  gamma_sigma_max: 0.08          # Standard deviation for a highly mismatched link
+
+  # Absolute Distribution (Delay)
+  # Forces all impedance boundaries to fall strictly within the equalizer's reachable window.
+  absolute_delay_ui_min: 2.0      # First reflection (e.g., package BGA)
+  absolute_delay_ui_max: 45.0     # Maximum reach of the precoder/equalizer
+
+  # Distance-Dependent Smearing and Attenuation
+  bounce_dispersion_max: 5.0     # Late echoes get 1.5 = 50% wider
+  echo_attenuation_factor: 2.0    # Higher number = faster decay of distant echoes
+
+  # --- VICREG MULTIPATH AUGMENTATIONS (Micro-Drift) ---
+  drift_gamma_sigma: 0.005       # Tiny voltage/impedance ripple on the reflections
+  drift_delay_ui: 0.15           # 0.15UI phase wander;  Small clock jitter / phase wander per boundary on reflection locations
+  # Invariance
+  drift_tau_pct: 0.05           # 5% thermal variation on rise/fall times
+  drift_weight_pct: 0.10        # 10% amplitude variation on reflections (voltage ripple)
+
+
+  # ==== Via Stub Resonance (High-frequency ringing)
+  # 0.0 means perfectly back-drilled via (no stub). 0.15 is a severe, deep notch.
+  stub_weight_min: 0.0
+  stub_weight_max: 0.0
+
+  # Derivative Distortion (High-pass peaking) applies to the combined Raw Channel above
+  # Simulates series capacitive coupling (e.g., AC coupling caps or gap parasitics).
+  # Emphasizes the edges and high frequencies, fighting the RC smearing.
+  deriv_weight_min: 0.0          # 0.0 means a perfectly continuous DC path
+  deriv_weight_max: 0.15         # 0.15 injects significant high-frequency peaking
+  f_res_ghz_min: 25.0
+  f_res_ghz_max: 45.0
+
+  # CROSSTALK (NEXT)
+  # Lower isolation = worse crosstalk. 100dB is effectively perfect isolation.
+  next_isolation_db_min: 40.0 # 40.0
+  next_isolation_db_max: 60.0 # 60.0
+  num_aggressors_min: 0          # E.g., typical victim lane bounded by 2 aggressors
+  num_aggressors_max: 0
+
+  # AWGN NOISE
+  # Applied last. 65 dB is essentially noiseless. 25-30 dB is realistic for 100G.
+  snr_db_min: 26.0
+  snr_db_max: 32.0
+
+
+
+rx:
+  frequency_offset_ppm: 1.9  # 57.9  # relative to baud rate
+  jitter_rms_ui: 0.0  # 0.02
+  adc_quantization_enob: 5.7
+
+  # ADC and Rx gains
+  # ADC will saturate any input outside [-ADC_input_max,ADC_input_max]
+  ADC:
+    clip_limit: 8.0
+    enob: 20 # 5.6
+    physical_bits: 32 # 8  # data path width
+
+  # implement a joint channel estimation and timing, block based equalizer
+  # (please see docs for more details)
+  FFE:
+    ffe_taps: 21  # Number of T-spaced FFE taps
+    precursor_percent: 40  # e.g. 15% precursor, 85% postcursor for a heavy tail channel
+    mu: 2.0e-4  # LMS Step Size
+    alpha: 1e-4  # regularization setup (Edge Repulsion)
+
+

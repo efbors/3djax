@@ -3,15 +3,15 @@ import yaml
 import os
 from pathlib import Path
 
-from transmitter import Transmitter
-from channel_200G_hard import Channel200GHard
-from agc import AGC
-from frequency_synthesizer import FrequencySynthesizer
-from a_phase_interp import APhaseInterp
-from adc import ADC
-from ffe import FFE
-from timing import Timing
-from rx_gains import RxGains
+from dsp_core.transmitter_pam4 import TransmitterPAM4
+from channel.channel_200G_hard import Channel200GHard
+from dsp_core.agc import AGC
+from dsp_core.frequency_synthesizer import FrequencySynthesizer
+from dsp_core.a_phase_interp import APhaseInterp
+from dsp_core.adc import ADC
+from dsp_core.ffe import FFE
+from dsp_core.timing import Timing
+from dsp_core.rx_gains import RxGains
 from utils.plot_sig import *
 from utils.dsp_probe import DspProbe
 
@@ -79,15 +79,15 @@ def main():
     # Convert the list of dicts into a single flat dict
     sequencer_dict = {k: v for d in config['rx']['rx_sequencer'] for k, v in d.items()}
 
-    probe = DspProbe(config)
-
     #
     # -- START OF SIGNAL PROCESSING
     #
 
     print("-- Generating Tx Data...")
-    tx = Transmitter(config)
+    tx = TransmitterPAM4(config)
     symbols, tx_waveform, tx_analog, sync_block = tx.generate_signal()
+
+    probe = DspProbe(config)
 
     if False:
         probe.animate_sweep('tx_analog', tx_analog, seg_size=os_factor, nrow=64, fps=30,

@@ -24,6 +24,8 @@ dependencies = [
     "PyYAML",
     # Basic static plotting (if you still need simple offline graphs)
     "matplotlib>=3.8.0",
+    "scikit-dimension",
+    "pandas",
     # The Hardware-Accelerated Visualization Engine
     "eyemon @ git+https://github.com/efbors/eyemon.git",
 ]

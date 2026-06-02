@@ -1,0 +1,132 @@
+# qam16x.yaml
+# Target and goal is a frequency offset free Tx,Chan,Rx pipeline, batched to
+# optimize the FFE
+
+system:
+  modulation: 'QAM16'
+  batch_size: 11
+  target_simulation_duration: 10.0e-6 # [s] approx
+  baud_rate: 100.0e+9
+  # Tsym = 1/baud_rate 100Gbd
+  # baud_rate: 1/Tsym   #  [Hz] 100 GBaud (1/UI)
+  os_factor: 8          # Analog Oversampling relative to baud rate
+  # Tana = Tsym/os_factor # analog sample
+  digital_streams: 64
+  # Tdig = Tsym * digital_streams - e.g. 1.5625GHz
+
+  #  blocks are processed serialy to mimic adaptation
+  digital_block_size: 24 # block processing in digital clocks;
+  # Tblk = Tdig * digital_block_size
+
+
+# ------------------ CHANNEL -------------------
+
+channel:  # RefDisRes (reflections, dispersion, resonance)
+
+  # Broadband attenuation - pure trace loss
+  insertion_loss_db_min: 0.0      # E.g., a short, high-quality chip-to-chip link
+  insertion_loss_db_max: 0.0      # E.g., a long, lossy backplane channel
+
+  # Raw Channel (base dispertion + two delayed reflections + stub resonance)
+  # BASE DISPERSION (The RC smearing)
+  tau_rise_min: 0.1e-13      # [s] Controls how fast the pulse peaks
+  tau_rise_max: 0.1e-13      # [s]
+  tau_fall_min: 1.0e-13      # [s] Controls how long the tail drags out
+  tau_fall_max: 1.0e-13      # [s]
+
+  # REFLECTIONS & DISTORTIONS
+  # --- STATISTICAL CASCADED MULTIPATH (Impedance Boundaries) ---
+
+  # The Poisson parameter (lambda).
+  # A lambda of 2.5 means most channels will have 2 or 3 major boundaries,
+  # but occasionally it will generate a complex channel with 6 or 7.
+  boundary_count_lambda: 2.5     
+
+  # Reflection Coefficient (Gamma) distribution.
+  # Gamma represents the severity of the impedance mismatch (e.g., hitting a via or connector).
+  gamma_mu: 0.0                  # Mean is 0 (ideally 50 ohms)
+  gamma_sigma_min: 0.02          # Standard deviation for a high-quality link
+  gamma_sigma_max: 0.08          # Standard deviation for a highly mismatched link
+
+  # Spatial Distribution (Delay)
+  # Determines how far apart the boundaries are physically spaced along the copper.
+  spacing_delay_ui_min: 2.0      # E.g., very short spacing between BGA and first via
+  spacing_delay_ui_max: 30.0     # E.g., a long backplane trace to the next connector
+
+  # Frequency-Dependent Smearing (Low-Pass Effect on distant bounces)
+  # Every time a signal bounces and travels further, it gets wider and lower in amplitude.
+  bounce_dispersion_min: 1.05    # 5% wider per bounce
+  bounce_dispersion_max: 1.30    # 30% wider per bounce
+
+  # --- VICREG MULTIPATH AUGMENTATIONS (Micro-Drift) ---
+  drift_gamma_sigma: 0.005       # Tiny voltage/impedance ripple on the reflections
+  drift_delay_ui: 0.15           # Small clock jitter / phase wander per boundary
+
+  #
+  #  # Package Mismatch (Short echo)
+  #  # Usually negative because BGA pads add parasitic capacitance, lowering impedance
+  #  pkg_weight_min: -0.0
+  #  pkg_weight_max: -0.0
+  #  pkg_delay_ui_min: 1.5
+  #  pkg_delay_ui_max: 3.5
+  #  # Connector Reflection (Long echo)
+  #  # Can swing heavily depending on the mechanical mating of the connector
+  #  conn_weight_min: -0.0
+  #  conn_weight_max: -0.0
+  #  conn_delay_ui_min: 12.0
+  #  conn_delay_ui_max: 16.0
+
+  # Via Stub Resonance (High-frequency ringing)
+  # 0.0 means perfectly back-drilled via (no stub). 0.15 is a severe, deep notch.
+  stub_weight_min: 0.0
+  stub_weight_max: 0.0
+
+
+  # Derivative Distortion (High-pass peaking) applies to the combined Raw Channel above
+  # Simulates series capacitive coupling (e.g., AC coupling caps or gap parasitics).
+  # Emphasizes the edges and high frequencies, fighting the RC smearing.
+  deriv_weight_min: 0.0          # 0.0 means a perfectly continuous DC path
+  deriv_weight_max: 0.0         # 0.15 injects significant high-frequency peaking
+  f_res_ghz_min: 25.0
+  f_res_ghz_max: 45.0
+
+  # CROSSTALK (NEXT)
+  # Lower isolation = worse crosstalk. 100dB is effectively perfect isolation.
+  next_isolation_db_min: 100.0 # 40.0
+  next_isolation_db_max: 100.0 # 60.0
+  num_aggressors_min: 0          # E.g., typical victim lane bounded by 2 aggressors
+  num_aggressors_max: 0
+
+  # AWGN NOISE
+  # Applied last. 65 dB is essentially noiseless. 25-30 dB is realistic for 100G.
+  snr_db_min: 60.0
+  snr_db_max: 60.0
+
+  # VICREG AUGMENTATIONS:
+  # Invariance
+  #drift_tau_pct: 0.05           # 5% thermal variation on rise/fall times
+  #drift_weight_pct: 0.10        # 10% amplitude variation on reflections (voltage ripple)
+  #drift_delay_ui: 0.25          # 0.25 UI phase wander on reflection locations
+  delta_snr_db: 3.0             # Delta between consecutive noise measurements
+
+rx:
+  frequency_offset_ppm: 1.9  # 57.9  # relative to baud rate
+  jitter_rms_ui: 0.0  # 0.02
+  adc_quantization_enob: 5.7
+
+  # ADC and Rx gains
+  # ADC will saturate any input outside [-ADC_input_max,ADC_input_max]
+  ADC:
+    clip_limit: 8.0
+    enob: 20 # 5.6
+    physical_bits: 32 # 8  # data path width
+
+  # implement a joint channel estimation and timing, block based equalizer
+  # (please see docs for more details)
+  FFE:
+    ffe_taps: 21  # Number of T-spaced FFE taps
+    precursor_percent: 40  # e.g. 15% precursor, 85% postcursor for a heavy tail channel
+    mu: 2.0e-4  # LMS Step Size
+    alpha: 1e-4  # regularization setup (Edge Repulsion)
+
+

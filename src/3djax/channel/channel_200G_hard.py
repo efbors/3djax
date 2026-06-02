@@ -153,7 +153,14 @@ class Channel200GHard:
         """Creates a highly configurable DCI channel impulse response."""
 
         # Read knobs from config
+        t = np.arange(0, 500) * self.dt  # 125 UI span
         mode = self.config['channel'].get('response_mode', 'physical')
+
+        if mode == 'ideal':
+            h = np.zeros_like(t)  # Dirac Delta
+            h[0] = 1.0
+            return h
+
         pkg_weight = float(self.config['channel']['pkg_weight'])
         stub_weight = float(self.config['channel']['stub_weight'])
         tau_rise = self.config['channel']['tau_rise']
@@ -172,20 +179,9 @@ class Channel200GHard:
         else:
             conn_weight = self.nominal_conn_weight
 
-        t = np.arange(0, 500) * self.dt  # 125 UI span
 
-        # ---------------------------------------------------------
-        # LEVEL 0: PERFECT PASS-THROUGH (Dirac Delta)
-        # ---------------------------------------------------------
-        if mode == 'ideal':
-            h = np.zeros_like(t)
-            h[0] = 1.0
-            return h
-
-        # ---------------------------------------------------------
         # LEVEL 1: BASE DISPERSION (Skin effect + Dielectric loss)
 
-        # ---------------------------------------------------------
         """
         Double-Exponential Impulse Response.  base impulse response of a band-limited
         transmission line; models 1. causality , 2. rise time, 3. fall time (longer tail
@@ -218,26 +214,26 @@ class Channel200GHard:
         h_norm = (h / np.sum(h)).astype(np.float32)
 
         return h_norm
-
-    @staticmethod
-    def plot_eye(rx_signal, os_factor, title="PAM4 Eye Diagram", delay_ui=0):
-        import matplotlib.pyplot as plt
-        """A high-performance 2D-histogram eye diagram plotter."""
-        samples_per_trace = os_factor * 2
-        trim_len = (len(rx_signal) - delay_ui * os_factor) // samples_per_trace * samples_per_trace
-        if trim_len <= 0: return
-
-        traces = rx_signal[delay_ui * os_factor: delay_ui * os_factor + trim_len]
-        traces = traces.reshape(-1, samples_per_trace)
-        time_ui = np.linspace(0, 2, samples_per_trace)
-
-        plt.figure(figsize=(8, 6))
-        for i in range(min(2000, len(traces))):
-            plt.plot(time_ui, traces[i], color='blue', alpha=0.05)
-
-        plt.title(title)
-        plt.xlabel("Time (UI)")
-        plt.ylabel("Amplitude")
-        plt.grid(True)
-        plt.axhline(0, color='black', linewidth=0.5)
-        plt.show()
+    #
+    # @staticmethod
+    # def plot_eye(rx_signal, os_factor, title="PAM4 Eye Diagram", delay_ui=0):
+    #     import matplotlib.pyplot as plt
+    #     """A high-performance 2D-histogram eye diagram plotter."""
+    #     samples_per_trace = os_factor * 2
+    #     trim_len = (len(rx_signal) - delay_ui * os_factor) // samples_per_trace * samples_per_trace
+    #     if trim_len <= 0: return
+    #
+    #     traces = rx_signal[delay_ui * os_factor: delay_ui * os_factor + trim_len]
+    #     traces = traces.reshape(-1, samples_per_trace)
+    #     time_ui = np.linspace(0, 2, samples_per_trace)
+    #
+    #     plt.figure(figsize=(8, 6))
+    #     for i in range(min(2000, len(traces))):
+    #         plt.plot(time_ui, traces[i], color='blue', alpha=0.05)
+    #
+    #     plt.title(title)
+    #     plt.xlabel("Time (UI)")
+    #     plt.ylabel("Amplitude")
+    #     plt.grid(True)
+    #     plt.axhline(0, color='black', linewidth=0.5)
+    #     plt.show()
