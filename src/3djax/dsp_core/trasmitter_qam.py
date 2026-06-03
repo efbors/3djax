@@ -1,36 +1,15 @@
 import numpy as np
 from utils.fft_convolve_same import fft_convolve_same
 from utils.bessel import generate_bessel_taps
+from utils.qam_mapper import get_qam_lut
 
 
-def get_wifi_qam_lut(modulation='QAM16'):
-    """Returns the 1D Gray-coded mapping and normalization factor for Wi-Fi standard QAM."""
-    if modulation == 'QAM4':
-        # 1 bit per channel: 0->-1, 1->+1
-        lut = np.array([-1, 1], dtype=float)
-        k_mod = 1.0 / np.sqrt(2)
-        bits_per_ch = 1
-    elif modulation == 'QAM16':
-        # 2 bits per channel: 00->-3, 01->-1, 11->1, 10->3
-        lut = np.array([-3, -1, 3, 1], dtype=float)
-        k_mod = 1.0 / np.sqrt(10)
-        bits_per_ch = 2
-    elif modulation == 'QAM64':
-        # 3 bits per channel: Wi-Fi standard 8-level mapping
-        lut = np.array([-7, -5, -1, -3, 7, 5, 1, 3], dtype=float)
-        k_mod = 1.0 / np.sqrt(42)
-        bits_per_ch = 3
-    else:
-        raise ValueError("Unsupported modulation")
-    return lut, k_mod, bits_per_ch
-
-
-def generate_walsh_hadamard_am(batch_size, length=256, lane_idx=0):
+def generate_walsh_hadamard_am(length, lane_idx=0):
     """Generates a 256-symbol QPSK Alignment Marker masked by a Walsh-Hadamard sequence."""
     # Generate a robust QPSK pseudo-random base sequence
     np.random.seed(42)  # Fixed seed so the marker is deterministic across runs
-    base_i = np.random.choice([-1.0, 1.0], size=(1, length))
-    base_q = np.random.choice([-1.0, 1.0], size=(1, length))
+    base_i = np.random.choice([-1.0, 1.0], size=(1, length)).astype(np.float32)
+    base_q = np.random.choice([-1.0, 1.0], size=(1, length)).astype(np.float32)
 
     # Simple 4x4 Walsh-Hadamard matrix rows for lane isolation
     wh_matrix = [
@@ -42,23 +21,24 @@ def generate_walsh_hadamard_am(batch_size, length=256, lane_idx=0):
     wh_seq = wh_matrix[lane_idx % 4]
 
     # Apply WH mask and broadcast to batch size
-    am_i = np.tile(base_i * wh_seq, (batch_size, 1))
-    am_q = np.tile(base_q * wh_seq, (batch_size, 1))
+    am_i = base_i * wh_seq.astype(np.float32)
+    am_q = base_q * wh_seq.astype(np.float32)
     return am_i, am_q
 
 
 class PhysicalTransmitter:
     def __init__(self, config):
         self.config = config
-        self.modulation = config['system'].get('modulation', 'QAM16')
+        self.modulation = config['system']['modulation']
         self.baud_rate = float(config['system']['baud_rate'])
         self.os_factor = int(config['system']['os_factor'])  # Analog OS (e.g., 8)
         self.T_ana = 1.0 / (self.baud_rate * self.os_factor)
+        self.am_length_symbols = int(config['system']['am_length_symbols'])
 
-        # --- PARSE YAML TX SETTINGS (with safe fallbacks) ---
         tx = config.get('tx', {})
+        self.baud_rate = float(config['system']['baud_rate'])
 
-        # 1. DAC
+        # DAC
         dac_cfg = tx.get('dac', {})
         self.enob = dac_cfg.get('physical_bits', 8)
         self.clip_papr = np.random.uniform(dac_cfg.get('clip_papr_db_min', 5.5),
@@ -66,19 +46,19 @@ class PhysicalTransmitter:
         self.inl_sigma = dac_cfg.get('inl_sigma_max', 1.5)
         self.dnl_sigma = dac_cfg.get('dnl_sigma_max', 0.8)
 
-        # 2. Clocking
+        # Clocking
         clock_cfg = tx.get('clocking', {})
         self.jitter_rms = np.random.uniform(clock_cfg.get('random_jitter_rms_fs_min', 50.0),
                                             clock_cfg.get('random_jitter_rms_fs_max', 350.0)) * 1e-15
 
-        # 3. IQ Imbalance
+        # IQ Imbalance
         iq_cfg = tx.get('iq_imbalance', {})
         self.iq_gain_db = np.random.normal(iq_cfg.get('gain_db_mu', 0.0),
                                            iq_cfg.get('gain_db_sigma_max', 0.8))
         self.iq_phase_deg = np.random.normal(iq_cfg.get('phase_deg_mu', 0.0),
                                              iq_cfg.get('phase_deg_sigma_max', 4.0))
 
-        # 4. Modulator
+        # Modulator
         mod_cfg = tx.get('modulator', {})
         self.vpp_vpi = np.random.uniform(mod_cfg.get('vpp_to_vpi_ratio_min', 0.4),
                                          mod_cfg.get('vpp_to_vpi_ratio_max', 0.9))
@@ -88,7 +68,7 @@ class PhysicalTransmitter:
                                   mod_cfg.get('extinction_ratio_db_max', 28.0))
         self.er_amp = 10 ** (-er_db / 20.0)
 
-        # 5. RF Driver / MPM
+        # RF Driver / MPM
         rf_cfg = tx.get('rf_driver', {})
         self.mpm_k = rf_cfg.get('poly_order_k', 5)
         self.mpm_m = rf_cfg.get('memory_depth_m', 4)
@@ -99,13 +79,23 @@ class PhysicalTransmitter:
         self.mpm_coeffs = np.random.normal(0, sigma_nl, size=(self.mpm_m, len(self.orders)))
         self.mpm_coeffs[0, 0] = 1.0  # Main instantaneous linear tap must be normalized to ~1.0
 
-        # --- PRE-CALCULATE HARDWARE TABLES & FILTERS ---
+        # --- pre-calculate hardware tables & filters
         self._generate_dac_grid()
 
         # Bessel Filter Cutoff (properly normalized against Simulation Nyquist)
-        cutoff_ratio = 1.3 / self.os_factor  #  1 is Simulation Nyquist
-        span = 64 # number of taps at simulation frequency
+        cutoff_ratio = 1.3 / self.os_factor  # 1 is Simulation Nyquist
+        span = 64  # number of taps at simulation frequency
         self.tx_afe_taps = generate_bessel_taps(cutoff_ratio=cutoff_ratio, span=span)
+
+        _, _, self.bits_per_ch = get_qam_lut(self.modulation)
+
+        # Determine the amount of flush symbols at the end of each frame
+        if self.config['channel']['mode'] == 'ideal':
+            self.flush_UI_len = 64
+        else:
+            dominant_UI_delay = self.config['channel']['absolute_delay_ui_max']
+            # add 2*dominant delay , rounded up to a power of 2 of zeros at the end of the payload
+            self.flush_UI_len = 2 ** np.ceil(np.log2(2 * dominant_UI_delay)).astype(int)
 
     def _generate_dac_grid(self):
         """Generates the static INL/DNL voltage map for the DAC."""
@@ -128,38 +118,45 @@ class PhysicalTransmitter:
 
     def transmit_frame(self, batch_size, payload_bits):
         """Executes the full pipeline for a batched row tensor."""
-        _, _, bits_per_ch = get_wifi_qam_lut(self.modulation)
-        payload_symbols = payload_bits // bits_per_ch
+
+        payload_symbols = payload_bits // self.bits_per_ch
 
         # Generate 256-symbol AM and Payload
-        am_i, am_q = generate_walsh_hadamard_am(batch_size, length=256, lane_idx=0)
+        am_ref_i, am_ref_q = generate_walsh_hadamard_am(length=self.am_length_symbols, lane_idx=0)
         # Apply standard Wi-Fi normalization to QPSK AM to match payload power
-        am_i *= (1.0 / np.sqrt(2))
-        am_q *= (1.0 / np.sqrt(2))
+        am_ref_i *= (1.0 / np.sqrt(2))
+        am_ref_q *= (1.0 / np.sqrt(2))
+        am_ref = am_ref_i + 1j * am_ref_q
+
+        am_i = np.tile(am_ref_i, (batch_size, 1))  # broadcast to batch size
+        am_q = np.tile(am_ref_q, (batch_size, 1))
 
         pay_i, pay_q = self._step1_generate_payload(batch_size, payload_symbols)
 
-        # Concatenate in the 100 Gbd digital domain
-        I_sym = np.concatenate((am_i, pay_i), axis=1)
-        Q_sym = np.concatenate((am_q, pay_q), axis=1)
+        # Flush tail
+        flush_padding = np.zeros((batch_size, self.flush_UI_len), dtype=np.float32)
 
-        # 2. DAC Digital Physics (200 GSa/s)
+        # Concatenate in the 100 Gbd digital domain
+        I_sym = np.concatenate((am_i, pay_i, flush_padding), axis=1)
+        Q_sym = np.concatenate((am_q, pay_q, flush_padding), axis=1)
+
+        # DAC Digital Domain (e.g. 200 GSa/s)
         I_dac, Q_dac = self._step2_dac_digital_domain(I_sym, Q_sym)
 
-        # 3. Electrical Analog Physics (800 GSa/s)
+        # Electrical Analog (Simulation) Domain (e.g. 800 GSa/s)
         I_rf, Q_rf = self._step3_analog_domain(I_dac, Q_dac)
 
-        # 4. Electro-Optic Physics (800 GSa/s Complex Baseband)
+        # Electro-Optic Domain (e.g. 800 GSa/s Complex Baseband)
         tx_optical_field = self._step4_modulator_physics(I_rf, Q_rf)
 
-        return tx_optical_field
+        return am_ref, tx_optical_field
 
     def _step1_generate_payload(self, batch_size, payload_symbols):
         """Generates random payload and maps to discrete QAM voltage levels."""
-        lut, k_mod, bits_per_ch = get_wifi_qam_lut(self.modulation)
+        lut, k_mod, _ = get_qam_lut(self.modulation)
 
-        i_idx = np.random.randint(0, 2 ** bits_per_ch, size=(batch_size, payload_symbols))
-        q_idx = np.random.randint(0, 2 ** bits_per_ch, size=(batch_size, payload_symbols))
+        i_idx = np.random.randint(0, 2 ** self.bits_per_ch, size=(batch_size, payload_symbols))
+        q_idx = np.random.randint(0, 2 ** self.bits_per_ch, size=(batch_size, payload_symbols))
 
         I_payload = lut[i_idx] * k_mod
         Q_payload = lut[q_idx] * k_mod

@@ -3,10 +3,10 @@ import yaml
 import os
 from pathlib import Path
 
-from dsp_core.trasmitter_qam import PhysicalTransmitter
-from channel.channel_refdisres import ChannelRefDisRes
+
 from utils.plot_sig import plot_channel_batch
-from dsp_core.receiver_analog_front_end import ReceiverAnalogFrontEnd
+
+from dsp_core.pipeline import CoherentPipeline
 
 
 def main():
@@ -32,11 +32,18 @@ def main():
     if 'Tsym' not in config['system']:
         config['system']['Tsym'] = Tsym  # baud rate (e.g. 100GHz)
 
-    print("-- Generating Tx Data...")
+    # Setup simulation constraints
+    batch_size = 64
+    num_payload_bits = 1944
 
-    tx = PhysicalTransmitter(config)
+    # Initialize the end-to-end coherent transceiver link
+    link = CoherentPipeline(config, batch_size=batch_size)
 
-    tx_analog = tx.transmit_frame(batch_size=batch_size, payload_bits=payload_bits)
+
+    # Execute the signal path (Keep invariance off for rapid DSP bring-up)
+    rx_a, _, h_a, _ = link.process_batch(num_payload_bits, enable_invariance=False)
+
+    breakpoint()
 
     if False:
         # ============================================
@@ -148,7 +155,7 @@ def main():
     channel_out = channel.process(tx_analog, h_a)
     # channel_out = channel.process(tx_analog, h_p)
 
-    if True:
+    if False:
         import matplotlib.pyplot as plt
         import numpy as np
         plt.plot(np.real(channel_out[0]))
@@ -158,6 +165,7 @@ def main():
     rx_afe = ReceiverAnalogFrontEnd(config)
     rx_adc_out = rx_afe.process(channel_out)
 
+    # Batch Detect MA
     breakpoint()
 
 

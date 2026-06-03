@@ -20,6 +20,8 @@ system:
   digital_block_size: 24 # block processing in digital clocks;
   # Tblk = Tdig * digital_block_size
 
+  am_length_symbols: 400
+
 
 #-----------------------------------------------
 #
@@ -203,9 +205,13 @@ rx:
   afe:
     3db_bandwidth_ghz_min: 45.0      # [GHz] Anti-aliasing filter bottleneck
     3db_bandwidth_ghz_max: 75.0      # [GHz] Premium Rx trace layout
-    filter_order_min: 3
-    filter_order_max: 5
     agc_target_amplitude: 0.8        # Target normalized amplitude to feed the ADC
+
+  # ==== Timing & Sampling Clock Deficiencies
+  clocking:
+    # Jitter in Unit Intervals (UI). 0.02 UI at 100 Gbd = 200 fs of root-mean-square jitter.
+    jitter_rms_ui_min: 0.005          # 0.005 - Ultra-stable high-end laboratory clock
+    jitter_rms_ui_max: 0.035          # 0.035 - Noisy, integrated transceiver clock loop
 
   # ==== ADC Digital Physics & Time-Interleaving (TI) Mismatches
   adc:
