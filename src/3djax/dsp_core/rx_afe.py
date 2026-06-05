@@ -2,11 +2,12 @@ import numpy as np
 from utils.fft_convolve_same import fft_convolve_same
 from utils.bessel import generate_bessel_taps
 from utils.qam_mapper import get_qam_lut
+from utils.diagnostics import oqam_eye
 
 
 # Assumes generate_bessel_taps and fft_convolve_same are available
 
-class ReceiverAnalogFrontEnd:
+class RxAFE:
     def __init__(self, config):
         self.config = config
         self.baud_rate = float(config['system']['baud_rate'])
@@ -18,7 +19,7 @@ class ReceiverAnalogFrontEnd:
         self.modulation = config['system']['modulation']
         _, _, self.bits_per_ch = get_qam_lut(self.modulation)
         self.payload_symbols = self.payload_bits // (2 * self.bits_per_ch)
-        self.am_symbols = self.config['system'].get('am_length_symbols', 256)
+        self.am_symbols = self.config['system'].get('am_length_symbols')
 
         self.fs_analog = self.baud_rate * self.os_analog
         self.fs_digital = self.baud_rate * self.os_digital
@@ -31,8 +32,8 @@ class ReceiverAnalogFrontEnd:
         # 0. Parse clocking from configuration
         clock_cfg = rx_cfg.get('clocking', {})
         # 1. Uniformly sample an RMS jitter value in UI for this batch instance
-        self.jitter_rms_ui = np.random.uniform(clock_cfg.get('jitter_rms_ui_min', 0.0),
-                                               clock_cfg.get('jitter_rms_ui_max', 0.02))
+        self.jitter_rms_ui = np.random.uniform(clock_cfg.get('jitter_rms_ui_min'),
+                                               clock_cfg.get('jitter_rms_ui_max'))
 
         # 2. Convert Unit Intervals (UI) to physical seconds
         # Fundamental relation: 1 UI = 1 / Baud Rate
@@ -40,15 +41,16 @@ class ReceiverAnalogFrontEnd:
         self.jitter_sec = self.jitter_rms_ui * self.T_sym
 
         # 1. AFE / TIA Parameters
-        self.agc_target = afe.get('agc_target_amplitude', 0.8)
+        self.agc_target = afe.get('agc_target_amplitude')
 
         # Uniformly slide the bandwidth to create dataset diversity
-        bw_ghz = np.random.uniform(afe.get('3db_bandwidth_ghz_min', 45.0),
-                                   afe.get('3db_bandwidth_ghz_max', 75.0))
+        bw_ghz = np.random.uniform(afe.get('3db_bandwidth_ghz_min'),
+                                   afe.get('3db_bandwidth_ghz_max'))
 
         # Calculate digital normalized cutoff (1.0 = Simulation Nyquist)
-        sim_nyquist_ghz = (self.fs_analog / 1e9) / 2.0
-        cutoff_ratio = bw_ghz / sim_nyquist_ghz
+        # sim_nyquist_ghz = (self.fs_analog / 1e9) / 2.0
+        # cutoff_ratio = bw_ghz / sim_nyquist_ghz
+        cutoff_ratio = 2 / self.os_analog
 
         span = 64  # number of taps at simulation frequency
 
@@ -57,16 +59,16 @@ class ReceiverAnalogFrontEnd:
 
         # 2. ADC Parameters
         self.enob = adc.get('physical_bits', 8)
-        self.clip_linear = 10 ** (np.random.uniform(adc.get('clip_papr_db_min', 6.0),
-                                                    adc.get('clip_papr_db_max', 10.0)) / 20.0)
-        self.inl_sigma = adc.get('inl_sigma_max', 1.5)
-        self.dnl_sigma = adc.get('dnl_sigma_max', 0.8)
+        self.clip_linear = 10 ** (np.random.uniform(adc.get('clip_papr_db_min'),
+                                                    adc.get('clip_papr_db_max')) / 20.0)
+        self.inl_sigma = adc.get('inl_sigma_max')
+        self.dnl_sigma = adc.get('dnl_sigma_max')
 
         # 3. ADC Time-Interleaving (TI) Parameters
         self.L = adc.get('ti_interleave_factor', 4)
-        gain_miss = adc.get('ti_gain_mismatch_pct_max', 3.0) / 100.0
-        skew_fs = adc.get('ti_skew_fs_max', 150.0) * 1e-15
-        dc_miss = adc.get('ti_dc_offset_mv_max', 5.0) / 1000.0
+        gain_miss = adc.get('ti_gain_mismatch_pct_max') / 100.0
+        skew_fs = adc.get('ti_skew_fs_max') * 1e-15
+        dc_miss = adc.get('ti_dc_offset_mv_max') / 1000.0
 
         # Generate TI mismatch arrays (independent for I and Q physical ADCs)
         self.ti_gain_I = np.random.normal(1.0, gain_miss, self.L)
@@ -101,6 +103,7 @@ class ReceiverAnalogFrontEnd:
         Processes the complex 800 GSa/s waveform through the Rx physics
         and downsamples to a quantized 200 GSa/s complex tensor.
         """
+
         # -- rx clock jitter (800 GSa/s Continuous Domain)
         # Apply Taylor series derivative approximation for complex timing jitter
         dt_jitter_I = np.random.normal(0, self.jitter_sec, rx_analog.shape)
@@ -119,62 +122,99 @@ class ReceiverAnalogFrontEnd:
         rx_Q = fft_convolve_same(np.imag(rx_jittered), self.rx_afe_taps)
         rx_filt = rx_I + 1j * rx_Q
 
-        # -- automatic gain control (Block-based RMS scaling)
+        # AGC - Block-based RMS scaling
         # Calculates the RMS power of the batch and scales it to the target
         rms_power = np.sqrt(np.mean(np.abs(rx_filt) ** 2, axis=-1, keepdims=True))
         agc_gain = self.agc_target / np.clip(rms_power, 1e-6, None)
-        rx_agc = rx_filt * agc_gain
+        rx_agc_sim = rx_filt * agc_gain  # at Fsim
 
-        # -- find timing alignment in the Fsim domain (e.g.  800Gs/s)
-        am_start_indices = self._detect_timing(self.os_analog, am_ref, rx_agc)
+        # Find timing alignment in the Fsim domain (e.g.  800Gs/s)
+        am_start_indices = self._detect_timing(self.os_analog, am_ref, rx_agc_sim)
+        am_start_indices -= 2  # from the AM being even and OQAM Center of Mass (Q is delayed by T/2)
 
-        total_symbols = self.am_symbols + self.payload_symbols
+        if False:
+            sig_to_show = rx_agc_sim
+            os_factor = 8
+            s0 = am_start_indices[0]
+            s1 = 15000
+            for ix in range(os_factor):
+                oqam_eye(sig_to_show[0, s0 + ix:s1], os_factor)
 
-        # Determine  how many ADC samples to extract (AM + payload)
-        # E.g. Fadc = 200 GSa/s Fbaud= 100 Gbd, this naturally yields 2 samples per symbol
-        samples_per_symbol_adc = self.os_analog // self.downsample_ratio
-        num_adc_samples = total_symbols * samples_per_symbol_adc
+        # Extract the sub-ADC sampling phase; fractional in (0,1,...Fsim/Fadc)
+        # This guarantees the AM peak lands exactly on the decimation grid.
+        sub_adc_shifts = am_start_indices % self.downsample_ratio
 
-        # 3. Build a static 2D grid of extraction indices
-        # Base offsets represent a rigid: [0, 4, 8, 12, ...] sequence
-        base_offsets = np.arange(num_adc_samples) * self.downsample_ratio
+        # 3. Build the decimation extraction grid
+        # base_grid is [0, 4, 8, 12, ...]
+        N_fsim = rx_agc_sim.shape[1]
+        N_fadc = N_fsim // self.downsample_ratio
 
-        # Broadcast-add every row's specific 800 GSa/s start index
-        # Resulting shape: (batch_size, num_adc_samples)
-        extraction_indices = am_start_indices[:, np.newaxis] + base_offsets
+        # Build the decimation extraction grid to the correct downsampled size
+        base_grid = np.arange(N_fadc) * self.downsample_ratio
+        # Stagger the starting phase of each row by its fractional shift.
+        # This does NOT erase the bulk delay.
+        extraction_grid = sub_adc_shifts[:, np.newaxis] + base_grid
 
-        # 4. Perform highly optimized, non-ragged vectorized extraction
-        rx_200g = np.take_along_axis(rx_agc, extraction_indices, axis=1)
+        # Safe circular wrap-around (just in case the extraction grid clips the far edge)
 
-        I_200g = np.real(rx_200g)
-        Q_200g = np.imag(rx_200g)
+        extraction_grid = extraction_grid % N_fsim
 
-        # -- apply ti mismatches (Derivative approximation for Skew)
+        # Extract and decimate in one single, highly-optimized step
+        rx_agc = np.take_along_axis(rx_agc_sim, extraction_grid, axis=1)
+
+        # Metadata: Calculate the EXACT starting index for each row in the 2x tensor
+        # Because we didn't artificially align the rows, these integers will be DIFFERENT
+        # for each row based on the channel's absolute delay!
+        am_start_indices_fadc_int = (am_start_indices - sub_adc_shifts) // self.downsample_ratio
+
+        # Ground truth metadata for downstream timing recovery algorithms
+        am_start_indices_fadc_float = am_start_indices / self.downsample_ratio
+
+        if False:
+            # Dynamically plot starting from exactly where the AM landed for row 0
+            s0_fadc = int(am_start_indices_fadc_int[0])
+            oqam_eye(rx_agc[0, s0_fadc: s0_fadc + 2000], os_factor=2, title="Timing Accurate (200 GSa/s)")
+
+        I_agc = np.real(rx_agc)
+        Q_agc = np.imag(rx_agc)
+
+        # Apply ti mismatches (Derivative approximation for Skew)
         # Calculate gradients for skew timing offsets
-        grad_I = np.gradient(I_200g, axis=-1)
-        grad_Q = np.gradient(Q_200g, axis=-1)
+        grad_I = np.gradient(I_agc, axis=-1)
+        grad_Q = np.gradient(Q_agc, axis=-1)
 
         # Apply the L-length repeating mismatch arrays via vectorized slicing
         for i in range(self.L):
             # Apply Gain and DC Offset
-            I_200g[:, i::self.L] = (I_200g[:, i::self.L] * self.ti_gain_I[i]) + self.ti_dc_I[i]
-            Q_200g[:, i::self.L] = (Q_200g[:, i::self.L] * self.ti_gain_Q[i]) + self.ti_dc_Q[i]
+            I_agc[:, i::self.L] = (I_agc[:, i::self.L] * self.ti_gain_I[i]) + self.ti_dc_I[i]
+            Q_agc[:, i::self.L] = (Q_agc[:, i::self.L] * self.ti_gain_Q[i]) + self.ti_dc_Q[i]
 
             # Apply Skew (Timing offset via gradient Taylor series)
-            I_200g[:, i::self.L] += grad_I[:, i::self.L] * (self.ti_skew_I[i] / self.T_dig)
-            Q_200g[:, i::self.L] += grad_Q[:, i::self.L] * (self.ti_skew_Q[i] / self.T_dig)
+            I_agc[:, i::self.L] += grad_I[:, i::self.L] * (self.ti_skew_I[i] / self.T_dig)
+            Q_agc[:, i::self.L] += grad_Q[:, i::self.L] * (self.ti_skew_Q[i] / self.T_dig)
 
-        # -- tia saturation & quantization (Separate physical ADCs)
-        def quantize(x, grid):
-            x_norm = np.clip(x / self.clip_linear, -1, 1)
-            idx = np.abs(x_norm[..., np.newaxis] - grid).argmin(axis=-1)
+        # O(1) Quantizer to the INL/DNL grid
+        def quantize_hybrid(x, grid):
+            levels = len(grid)
+
+            # Normalize and clip
+            x_norm = np.clip(x / self.clip_linear, -1.0, 1.0)
+
+            # Map continuous voltage directly to an integer index (the ADC Code) - O(1) time
+            idx = np.round((x_norm + 1.0) / 2.0 * (levels - 1)).astype(np.int32)
+
+            # Direct lookup into the non-linear physical grid
             return grid[idx] * self.clip_linear
 
-        I_out = quantize(I_200g, self.dac_grid_I)
-        Q_out = quantize(Q_200g, self.dac_grid_Q)
+        I_out = quantize_hybrid(I_agc, self.dac_grid_I)
+        Q_out = quantize_hybrid(Q_agc, self.dac_grid_Q)
 
         # Recombine into complex 200 GSa/s output
         rx_adc_out = (I_out + 1j * Q_out).astype(np.complex64)
+        if True:
+            # Dynamically plot starting from exactly where the AM landed for row 0
+            s0_fadc = int(am_start_indices_fadc_int[0])
+            oqam_eye(rx_adc_out[0, s0_fadc: s0_fadc + 2000], os_factor=2, title="Timing Accurate (200 GSa/s)")
 
         return rx_adc_out
 

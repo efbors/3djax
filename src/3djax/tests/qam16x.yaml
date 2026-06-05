@@ -20,7 +20,7 @@ system:
   digital_block_size: 24 # block processing in digital clocks;
   # Tblk = Tdig * digital_block_size
 
-  am_length_symbols: 400
+  am_length_symbols: 2000
 
 
 #-----------------------------------------------
@@ -46,8 +46,8 @@ tx:
   # ==== Timing & Sampling Clock Deficiencies
   clocking:
     # High-frequency phase noise mapping to amplitude noise at high frequencies
-    random_jitter_rms_fs_min: 50.0   # [fs] Ultra-clean low-noise laboratory clock source
-    random_jitter_rms_fs_max: 350.0  # [fs] High-speed integrated transceiver PLL jitter floor
+    random_jitter_rms_fs_min: 30.0   # [fs] 50. Ultra-clean low-noise laboratory clock source
+    random_jitter_rms_fs_max: 30.0  # [fs] 350. High-speed integrated transceiver PLL jitter floor
 
     # Duty Cycle Distortion (DCD) and periodic power-supply injection
     det_jitter_ui_min: 0.00          # Perfect clock symmetry
@@ -59,11 +59,11 @@ tx:
 
   # ==== In-Phase and Quadrature (I/Q) Analog Mismatches
   iq_imbalance:
-    gain_db_mu: 0.0                  # Ideally balanced
-    gain_db_sigma_max: 0.8           # [dB] Variations in independent I vs Q analog driver paths
+    gain_db_mu: 0.0                  # 0.0 Ideally balanced
+    gain_db_sigma_max: 0.1           # [dB] 0.8 Variations in independent I vs Q analog driver paths
 
     phase_deg_mu: 0.0                # Ideally perfectly orthogonal (90 degrees)
-    phase_deg_sigma_max: 4.0         # [deg] Deviation from quadrature orthogonality
+    phase_deg_sigma_max: 3.0         # [deg] 4.0 Deviation from quadrature orthogonality
 
   # ==== Tx Analog Front-End (AFE) Frequency Response & Package Parasitics
   afe_frequency_response:
@@ -79,11 +79,11 @@ tx:
   # ==== RF Driver Amplifier (PA) Non-Linearities & Thermal Memory Effects
   # Employs a complex-valued Volterra-style Memory Polynomial Model (MPM)
   rf_driver:
-    poly_order_k: 5                  # Maximum odd non-linear order evaluated (Captures 3rd & 5th IMD)
-    memory_depth_m: 4                # Number of past oversampled analog steps affecting the current state
+    poly_order_k: 5                  # 5 Maximum odd non-linear order evaluated (Captures 3rd & 5th IMD)
+    memory_depth_m: 3                # 4 Number of past oversampled analog steps affecting the current state
 
     # Scaling factor for the AM/AM compression and AM/PM phase twisting
-    non_linear_coefficients_sigma: 0.15 # Controls the variance/severity of the non-linear driver transfer curve
+    non_linear_coefficients_sigma: 0.04 # 0.15 Controls the variance/severity of the non-linear driver transfer curve
 
     # Driver output back-off (OBO). Lower means driving harder into saturation.
     input_backoff_db_min: 1.0        # Heavily saturated driver, intense constellation warping
@@ -210,14 +210,14 @@ rx:
   # ==== Timing & Sampling Clock Deficiencies
   clocking:
     # Jitter in Unit Intervals (UI). 0.02 UI at 100 Gbd = 200 fs of root-mean-square jitter.
-    jitter_rms_ui_min: 0.005          # 0.005 - Ultra-stable high-end laboratory clock
-    jitter_rms_ui_max: 0.035          # 0.035 - Noisy, integrated transceiver clock loop
+    jitter_rms_ui_min: 0.001          # 0.005 - Ultra-stable high-end laboratory clock
+    jitter_rms_ui_max: 0.001          # 0.035 - Noisy, integrated transceiver clock loop
 
   # ==== ADC Digital Physics & Time-Interleaving (TI) Mismatches
   adc:
-    physical_bits: 8                 # Rigid data path width
-    clip_papr_db_min: 6.0            # Severe soft-clipping at the TIA/ADC boundary
-    clip_papr_db_max: 10.0           # Conservative clipping
+    physical_bits: 12                 # Rigid data path width
+    clip_papr_db_min: 16.0            # 6.0 Severe soft-clipping at the TIA/ADC boundary
+    clip_papr_db_max: 20.0           # 10.0 Conservative clipping
 
     # Static Non-Linearities
     inl_sigma_max: 1.5               # Maximum standard deviation of cumulative curve warping [LSB]

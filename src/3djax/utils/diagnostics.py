@@ -15,40 +15,56 @@ def plot_time_domain(signal_800g, title="Time-Domain Waveform"):
     plt.show(block=False)
 
 
-def plot_oqam_constellation_grid(signal_800g, modulation='QAM16', os_factor=8):
-    """Undoes OQAM delay on Q and plots the 8-phase downsampling grid."""
-    sig_I = np.real(signal_800g[0, :])
-    sig_Q = np.imag(signal_800g[0, :])
+import matplotlib.pyplot as plt
+import numpy as np
 
-    # Undo OQAM shift: Roll Q backwards by T/2 (OS // 2)
-    sig_Q_realigned = np.roll(sig_Q, shift=-(os_factor // 2))
-    sig_realigned = sig_I + 1j * sig_Q_realigned
 
-    # Strip the Alignment Marker (first 256 symbols) to view pure payload
-    payload_signal = sig_realigned[(256 * os_factor):]
+def oqam_eye(signal_in, os_factor, title=''):
+    """Undoes OQAM delay on Q and plots a single constellation canvas with a time-colored trend."""
+    sig_I = np.real(signal_in)
+    sig_Q = np.imag(signal_in)
 
-    fig, axes = plt.subplots(2, 4, figsize=(16, 8), sharex=True, sharey=True)
-    fig.suptitle(f"Transmitter Constellation: Downsampling Grid (OS={os_factor})\n"
-                 f"{modulation} Realigned OQAM", fontsize=14)
+    # Undo OQAM shift: Roll Q backwards by T/2 (OS // 2) along the sample axis
+    sig_Q_realigned = np.roll(sig_Q, shift=-(os_factor // 2), axis=-1)
+    sigal = sig_I + 1j * sig_Q_realigned
 
-    for offset in range(os_factor):
-        row, col = offset // 4, offset % 4
-        ax = axes[row, col]
+    # Keep your preferred fig, ax style but setup a single square canvas
+    fig, ax = plt.subplots(figsize=(9, 8))  # Widened slightly to accommodate colorbar comfortably
+    fig.suptitle(title, fontsize=14)
 
-        # Slicing down to symbol rate based on sample phase offset
-        sig_baud = payload_signal[offset::os_factor]
-        ax.scatter(np.real(sig_baud), np.imag(sig_baud), s=1.0, alpha=0.1, color='purple')
+    # Flatten the arrays to safely handle 2D batch frames or 1D arrays alike
+    x_pts_os = np.real(sigal).ravel()
+    y_pts_os = np.imag(sigal).ravel()
 
-        ax.set_title(f"Sampling Offset: {offset}")
-        ax.grid(True, which='both', linestyle=':', alpha=0.3)
-        ax.set_aspect('equal', 'box')
-        ax.axhline(0, color='black', lw=0.5, alpha=0.5)
-        ax.axvline(0, color='black', lw=0.5, alpha=0.5)
-        ax.set_xlim([-2.0, 2.0])
-        ax.set_ylim([-2.0, 2.0])
+    x_pts = x_pts_os[::os_factor]
+    y_pts = y_pts_os[::os_factor]
 
-        if row == 1: ax.set_xlabel("In-Phase (I)")
-        if col == 0: ax.set_ylabel("Quadrature (Q)")
+    # Create a normalized sequence array tracking the symbol timeline
+    symbol_timeline = np.arange(len(x_pts))
+
+    # Map color 'c' to the timeline. 'plasma' transitions  from dark purple to hot pink/yellow
+    sc = ax.scatter(x_pts, y_pts, c=symbol_timeline, cmap='plasma', s=4.0, alpha=0.8)
+
+    # Add a proportional colorbar indicating the forward march of time
+    cbar = fig.colorbar(sc, ax=ax, fraction=0.046, pad=0.04)
+    cbar.set_label("Symbol Sequence (Oldest → Newest)", fontsize=11)
+    cbar.ax.tick_params(labelsize=9)
+
+    # Calculate dynamic uniform boundaries with 15% extra margin
+    max_val = max(np.max(np.abs(x_pts)), np.max(np.abs(y_pts)))
+    lim = max_val * 1.15
+
+    # Apply symmetric limits
+    ax.set_xlim([-lim, lim])
+    ax.set_ylim([-lim, lim])
+
+    # Styling details
+    ax.grid(True, which='both', linestyle=':', alpha=0.3)
+    ax.set_aspect('equal', 'box')
+    ax.axhline(0, color='black', lw=0.5, alpha=0.5)
+    ax.axvline(0, color='black', lw=0.5, alpha=0.5)
+    ax.set_xlabel("In-Phase (I)", fontsize=11)
+    ax.set_ylabel("Quadrature (Q)", fontsize=11)
 
     plt.tight_layout()
     plt.show(block=False)

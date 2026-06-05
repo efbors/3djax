@@ -31,6 +31,7 @@ import numpy as np
 import numpy as np
 import skdim
 import time
+from utils.diagnostics import oqam_eye
 
 
 class ChannelRefDisRes:
@@ -73,8 +74,10 @@ class ChannelRefDisRes:
 
         if c['mode'] == 'ideal':
             # Ideal Dirac Delta impulse response, properly batched as (B, 1)
-            h_a = np.ones((self.batch_size, 1), dtype=np.complex64)
-            h_p = np.ones((self.batch_size, 1), dtype=np.complex64)
+            h_a = np.zeros((self.batch_size, 3), dtype=np.complex64)
+            h_a[:, 1] = 1.0
+            h_p = np.zeros((self.batch_size, 3), dtype=np.complex64)
+            h_p[:, 1] = 1.0
             return h_a, h_p
 
         # Base Parameters (Anchor)
@@ -251,8 +254,9 @@ class ChannelRefDisRes:
         # IFFT back to time domain. Since Y is complex, rx_conv_full is complex.
         rx_conv_full = np.fft.ifft(Y, n=N_fft, axis=-1)
 
-        # Truncate the mathematical tail to maintain the exact input array size
-        rx_conv = rx_conv_full[:, :N_samples].astype(np.float32)
+        # Truncate the mathematical tail while correcting for the filter's phase center
+        delay = (M - 1) // 2
+        rx_conv = rx_conv_full[:, delay: delay + N_samples].astype(np.complex64)
 
         # near-end crosstalk (NEXT) - Complex Baseband Aggressors
         num_symbols = (N_samples // self.os_factor) + 2

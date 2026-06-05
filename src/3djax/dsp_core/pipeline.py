@@ -1,7 +1,8 @@
 import numpy as np
 from dsp_core.trasmitter_qam import PhysicalTransmitter
 from channel.channel_refdisres import ChannelRefDisRes
-from dsp_core.receiver_analog_front_end import ReceiverAnalogFrontEnd
+from dsp_core.rx_afe import RxAFE
+from utils.diagnostics import oqam_eye
 
 
 class CoherentPipeline:
@@ -12,7 +13,7 @@ class CoherentPipeline:
         # Establish symmetric physical layer hardware modules
         self.tx = PhysicalTransmitter(config)
         self.channel_medium = ChannelRefDisRes(config, B=batch_size)
-        self.rx_afe = ReceiverAnalogFrontEnd(config)
+        self.rx_afe = RxAFE(config)
 
     def process_batch(self, payload_bits, enable_invariance=False):
         """
@@ -24,23 +25,24 @@ class CoherentPipeline:
             h_a: The anchor channel impulse response matrix
             h_p: The invariant channel impulse response matrix or None
         """
-        # Synthesize physical channels for this specific transmission step
-        h_a, h_p = self.channel_medium.generate_batch()
 
         # Transmitter
-        am_ref, tx_analog = self.tx.transmit_frame(
+        self.am_ref, tx_analog = self.tx.transmit_batch(
             batch_size=self.batch_size,
             payload_bits=payload_bits
         )
 
+        # Synthesize physical channels for this specific transmission step
+        h_a, h_p = self.channel_medium.generate_batch()
         # Process main, Anchor Track (A)
         channel_out_a = self.channel_medium.process(tx_analog, h_a)
-        rx_adc_a = self.rx_afe.process(am_ref, channel_out_a)
+
+        rx_adc_a = self.rx_afe.process(self.am_ref, channel_out_a)
 
         # Process second, Invariant Track (P) if requested
         if enable_invariance:
             channel_out_p = self.channel_medium.process(tx_analog, h_p)
-            rx_adc_p = self.rx_afe.process(am_ref, channel_out_p)
+            rx_adc_p = self.rx_afe.process(self.am_ref, channel_out_p)
         else:
             h_p = None
             rx_adc_p = None
