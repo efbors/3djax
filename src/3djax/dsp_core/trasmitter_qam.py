@@ -3,6 +3,7 @@ from utils.fft_convolve_same import fft_convolve_same
 from utils.bessel import generate_bessel_taps
 from utils.qam_mapper import get_qam_lut
 from utils.diagnostics import oqam_eye, find_best_phase_QAM16
+import scipy.signal as signal
 
 
 def generate_walsh_hadamard_am(length, lane_idx=0):
@@ -270,12 +271,26 @@ class PhysicalTransmitter:
     def _step3_analog_domain(self, dac_out):
         """200GSa/s to 800GSa/s (4x OS), Filtering, and Volterra PA Non-linearities."""
         analog_os = self.os_factor // 2
-        I_2x = np.real(dac_out)
-        Q_2x = np.imag(dac_out)
 
-        # Continuous Time Projection (e.g. 800 GSa/s)
-        I_8x = np.repeat(I_2x, analog_os, axis=1).astype(np.float32)
-        Q_8x = np.repeat(Q_2x, analog_os, axis=1).astype(np.float32)
+        enable_DAC_zoh = True
+        if enable_DAC_zoh:
+
+            I_2x = np.real(dac_out)
+            Q_2x = np.imag(dac_out)
+
+            # Continuous Time Projection (e.g. 800 GSa/s)
+            I_8x = np.repeat(I_2x, analog_os, axis=1).astype(np.float32)
+            Q_8x = np.repeat(Q_2x, analog_os, axis=1).astype(np.float32)
+        else:
+            # Proper Fourier Interpolation (Creates a smooth, continuous band-limited wave)
+            # resample() automatically handles the zero-padding in the frequency domain
+            new_len = dac_out.shape[1] * analog_os
+
+            # dac_out_8x is now a smooth 800 GHz wave, NOT a staircase
+            dac_out_8x = signal.resample(dac_out, new_len, axis=1)
+
+            I_8x = np.real(dac_out_8x)
+            Q_8x = np.imag(dac_out_8x)
 
         if self.enable_jitter_rms:
             # Jitter Injection (Taylor Series Derivative Approximation)
@@ -290,8 +305,8 @@ class PhysicalTransmitter:
         Q_filt = fft_convolve_same(Q_8x, self.tx_afe_taps)
 
         # RF Driver Memory Polynomial (MPM)
-        I_nl = np.zeros_like(I_filt)
-        Q_nl = np.zeros_like(Q_filt)
+        I_nl = np.copy(I_filt)
+        Q_nl = np.copy(Q_filt)
 
         # Generalized Volterra loop
         if self.enable_mpm_volterra:  # debug

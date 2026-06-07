@@ -51,6 +51,8 @@ class ChannelRefDisRes:
         self.os_factor = int(config['system']['os_factor'])
         self.batch_size = int(config['system']['batch_size'])
 
+        self.enable_chromatic_dispersion = config['channel']['enable_chromatic_dispersion']
+
         self.fs = self.baud_rate * self.os_factor
         self.dt = 1 / self.fs
         self.ui_sec = 1.0 / self.baud_rate
@@ -144,8 +146,8 @@ class ChannelRefDisRes:
             t_shifted = t_grid - tau_i
             t_safe = np.maximum(t_shifted, 0.0)
 
-            # --- APPLY DISTANCE-BASED PHYSICS ---
-            # 1. Dispersion: The further it traveled (tau_i), the wider it gets
+            #  Dispersion: this is Baseband/Copper Dispertion
+            #  The further it traveled (tau_i), the wider it gets
             # Max delay is approx 48 * dt. Scale the rise/fall times.
             max_delay_sec = 48 * self.ui_sec
             dispersion_ratio = 1.0 + (tau_i / max_delay_sec) * (bounce_dispersion_max - 1.0)
@@ -248,8 +250,35 @@ class ChannelRefDisRes:
         X = np.fft.fft(rx_attenuated, n=N_fft, axis=-1)
         H = np.fft.fft(h, n=N_fft, axis=-1)
 
-        # Multiply in frequency domain
-        Y = X * H
+        if self.enable_chromatic_dispersion:
+            # --- OPTICAL PHYSICS: CHROMATIC DISPERSION ---
+            # Note: for such a short channe, it does not make much difference;
+            #       the beta2 is about -2e-26;  this is ~= 0.002rad (0.1deg) phase shift
+            # Standard Single Mode Fiber (SSMF) parameters
+            D = 17.0  # ps/(nm*km) at 1550nm
+            lambda_c = 1550e-9  # meters
+            c_light = 299792458.0
+            length_km = 0.5  # 500 meter DCI link
+            fs = 800e9  # 800 GSa/s analog simulation rate
+
+            # Calculate beta2 (Group Velocity Dispersion parameter)
+            beta2 = -(D * 1e-6 * lambda_c ** 2) / (2 * np.pi * c_light)  # s^2/km
+
+            # Generate the frequency grid mapped to your exact FFT size
+            freqs = np.fft.fftfreq(N_fft, d=1.0 / fs)
+            omega = 2 * np.pi * freqs
+
+            # Build the all-pass complex phase matrix for CD
+            # Broadcasting handles the batch dimension automatically
+            H_CD = np.exp(-1j * 0.5 * beta2 * (omega ** 2) * length_km)
+
+            # Multiply all domains together ---
+            # Signal * Copper AFE/Reflections * Optical Fiber
+            Y = X * H * H_CD
+        else:
+
+            # Multiply in frequency domain
+            Y = X * H
 
         # IFFT back to time domain. Since Y is complex, rx_conv_full is complex.
         rx_conv_full = np.fft.ifft(Y, n=N_fft, axis=-1)
@@ -300,3 +329,29 @@ class ChannelRefDisRes:
         rx_final = rx_with_xtalk + awgn
 
         return rx_final.astype(np.complex64)
+
+
+def apply_chromatic_dispersion(tx_complex_analog, fs=800e9, length_km=0.5):
+    """
+    Applies  physical Chromatic Dispersion for short-reach DCI.
+    """
+    # Standard SMF parameters at 1550nm
+    D = 17.0  # ps/(nm*km)
+    lambda_c = 1550e-9  # meters
+    c = 299792458.0  # m/s
+
+    # Calculate beta2 (Group Velocity Dispersion parameter) in s^2/km
+    beta2 = -(D * 1e-6 * lambda_c ** 2) / (2 * np.pi * c)
+
+    N = tx_complex_analog.shape[-1]
+    freqs = np.fft.fftfreq(N, d=1.0 / fs)
+    omega = 2 * np.pi * freqs
+
+    # The CD Phase Matrix
+    cd_phase = np.exp(-1j * 0.5 * beta2 * (omega ** 2) * length_km)
+
+    # Apply in frequency domain
+    TX_f = np.fft.fft(tx_complex_analog, axis=-1)
+    RX_f = TX_f * cd_phase
+
+    return np.fft.ifft(RX_f, axis=-1)

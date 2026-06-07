@@ -12,9 +12,11 @@ class ChannelEstimator:
         rx_am: Extracted Rx ZC sequence [batch_size, am_len]
         tx_ref: Ideal Tx ZC sequence [am_len]
         """
+        tx_ref = np.squeeze(tx_ref)
+
         # FFT of received and reference
-        Y = np.fft.fft(rx_am, axis=1)
-        X = np.fft.fft(tx_ref, axis=1)
+        Y = np.fft.fft(rx_am, axis=-1)
+        X = np.fft.fft(tx_ref, axis=-1)
 
         # Simple division (safe because X has no nulls for ZC sequences)
         H_est = Y / X
@@ -30,6 +32,7 @@ class ChannelEstimator:
     def estimate_channel_td_corr(self, rx_am, tx_ref):
         """
         Time Domain Cross-Correlation Channel Estimation.
+        tx_ref at Fdac;
         """
         # Matched filter is the time-reversed complex conjugate
         tx_ref = np.squeeze(tx_ref)
@@ -62,23 +65,49 @@ class ChannelEstimator:
         """
         batch_size = rx_am.shape[0]
         tx_ref = np.squeeze(tx_ref)
-        am_len = tx_ref.shape[0]
 
-        # 1. Build the convolution matrix X [am_len, tap_count]
-        # We use a trick: convolving reference with channel is the same as
-        # multiplying the Toeplitz matrix of the reference by the channel vector.
+        # 1. Build the convolution matrix X
+        # X row 0 corresponds to time index (tap_count - 1) of the tx_ref
         X = convolution_matrix(tx_ref, tap_count, mode='valid')
-
-        # Since mode='valid' shortens the output, we must slice our received signal to match
         valid_len = X.shape[0]
 
         h_est_batch = np.zeros((batch_size, tap_count), dtype=np.complex128)
 
-        # 2. Solve the Least Squares problem for each row in the batch
-        # np.linalg.lstsq directly solves X * h = y minimizing the squared error
-        for i in range(batch_size):
-            y_valid = rx_am[i, :valid_len]
+        # 2. Slice y to correctly align with X
+        # We offset by center_delay so the estimator captures precursor taps.
+        center_delay = 32
+        start_idx = (tap_count - 1) - center_delay
+
+        for i in range(1):
+            # Slice the received signal to perfectly match the Toeplitz rows
+            y_valid = rx_am[i, start_idx: start_idx + valid_len]
+
+            # Solve X * h = y
             h_est, residuals, rank, s = np.linalg.lstsq(X, y_valid, rcond=None)
             h_est_batch[i] = h_est
 
         return h_est_batch
+
+        # batch_size = rx_am.shape[0]
+        # tx_ref = np.squeeze(tx_ref)
+        # am_len = tx_ref.shape[0]
+        #
+        # # 1. Build the convolution matrix X [am_len, tap_count]
+        # # We use a trick: convolving reference with channel is the same as
+        # # multiplying the Toeplitz matrix of the reference by the channel vector.
+        # X = convolution_matrix(tx_ref, tap_count, mode='valid')
+        #
+        # # Since mode='valid' shortens the output, we must slice our received signal to match
+        # valid_len = X.shape[0]
+        #
+        # h_est_batch = np.zeros((batch_size, tap_count), dtype=np.complex128)
+        #
+        # # 2. Solve the Least Squares problem for each row in the batch
+        # # np.linalg.lstsq directly solves X * h = y minimizing the squared error
+        # # for i in range(batch_size):
+        # for i in range(1):
+        #     y_valid = rx_am[i, :valid_len]
+        #     h_est, residuals, rank, s = np.linalg.lstsq(X, y_valid, rcond=None)
+        #     h_est_batch[i] = h_est
+        #
+        # return h_est_batch

@@ -53,7 +53,6 @@ class RxAFE:
         # sim_nyquist_ghz = (self.fs_analog / 1e9) / 2.0
         # cutoff_ratio = bw_ghz / sim_nyquist_ghz
         cutoff_ratio = 2 / self.os_analog
-
         span = 64  # number of taps at simulation frequency
 
         # Generate anti-aliasing filter at 800 GSa/s (Hardcoded 4th-order)
@@ -146,6 +145,12 @@ class RxAFE:
         # The alignment indices are in the Fsim domain;  rotate by the fractional
         # amount to land each signal aligned on the Fadc grid ( less than Fsim//Fadc)
         fractional_am_shifts = am_start_indices % self.downsample_ratio
+
+        # # --- DEBUG LOGGING ---
+        # print(f"\n--- BATCH TIMING LOG ---")
+        # print(f"Coarse 800GHz Indices (First 4): {am_start_indices[:4]}")
+        # print(f"Fractional Shifts (First 4): {fractional_am_shifts[:4]}")
+        # # ---------------------
 
         # Build the decimation extraction grid
         # base_grid is [0, 4, 8, 12, ...]
@@ -248,15 +253,17 @@ class RxAFE:
     def _detect_timing(self, os_factor, am_ref, rx_agc):
         """
         Detects the starting index of the alignment marker for each row in the batch.
+        am_ref is at fadc
         """
         batch_size = rx_agc.shape[0]
 
+        os_sim2adc = os_factor // 2
         # Upsample the reference by inserting (os_factor - 1) zeros between symbols
         am_len = am_ref.shape[-1]
-        filter_len = am_len * os_factor
+        filter_len = am_len * os_sim2adc
 
-        am_upsampled = np.zeros(am_len * os_factor, dtype=np.complex64)
-        am_upsampled[::os_factor] = am_ref
+        am_upsampled = np.zeros(am_len * os_sim2adc, dtype=np.complex64)
+        am_upsampled[::os_sim2adc] = am_ref
 
         # Broadcast to match the batch dimension
         am_broadcast = np.broadcast_to(am_upsampled, (batch_size, filter_len))
@@ -270,26 +277,30 @@ class RxAFE:
         # Extract the index of the maximum correlation peak per row
         peak_indices = np.argmax(np.abs(corr), axis=-1)
 
-        # Clip the integer peaks to prevent IndexError.
-        max_idx = corr.shape[-1] - 1
-        m_safe = np.clip(peak_indices, 1, max_idx - 1)
+        enable_parabolic_interpolation = True
+        if enable_parabolic_interpolation:
+            # Clip the integer peaks to prevent IndexError.
+            max_idx = corr.shape[-1] - 1
+            m_safe = np.clip(peak_indices, 1, max_idx - 1)
 
-        # --- Parabolic interpolation of the peak abscissa
-        # Extract the peak and its immediate neighbors across the batch
-        row_idx = np.arange(batch_size)
-        y_minus1 = np.abs(corr[row_idx, m_safe - 1])
-        y_0 = np.abs(corr[row_idx, m_safe])
-        y_plus1 = np.abs(corr[row_idx, m_safe + 1])
+            # --- Parabolic interpolation of the peak abscissa
+            # Extract the peak and its immediate neighbors across the batch
+            row_idx = np.arange(batch_size)
+            y_minus1 = np.abs(corr[row_idx, m_safe - 1])
+            y_0 = np.abs(corr[row_idx, m_safe])
+            y_plus1 = np.abs(corr[row_idx, m_safe + 1])
 
-        # Calculate the fractional offset (delta)
-        # A small epsilon (1e-12) is added to the denominator to prevent a
-        # ZeroDivisionError in the unlikely event of a perfectly flat peak.
-        numerator = y_plus1 - y_minus1
-        denominator = 2 * y_0 - y_plus1 - y_minus1 + 1e-12
-        delta = 0.5 * (numerator / denominator)
+            # Calculate the fractional offset (delta)
+            # A small epsilon (1e-12) is added to the denominator to prevent a
+            # ZeroDivisionError in the unlikely event of a perfectly flat peak.
+            numerator = y_plus1 - y_minus1
+            denominator = 2 * y_0 - y_plus1 - y_minus1 + 1e-12
+            delta = 0.5 * (numerator / denominator)
 
-        # Compute the final floating-point alignment indices
-        peak_indices_fp = m_safe + delta
+            # Compute the final floating-point alignment indices
+            peak_indices_fp = m_safe + delta
+        else:
+            peak_indices_fp = peak_indices.astype(np.float32)
 
         # Shift the peak back to the true start of the frame (Index 0 of the AM)
         # The 'same' convolution delays the peak by exactly half the filter length

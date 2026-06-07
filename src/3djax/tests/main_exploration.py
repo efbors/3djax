@@ -77,28 +77,39 @@ def main():
 
     # Run the MMSE equivalent channel estimator
     estimator = ChannelEstimator()
-    # h_est_zf = estimator.estimate_channel_fd_zf(rx_am_a, am_ref, tap_count=2003)
-    # h_est_ls = estimator.estimate_channel_td_ls(rx_am_a, am_ref, tap_count=2003)
+
+    h_est_zf = estimator.estimate_channel_fd_zf(rx_am_a, am_ref, tap_count=2003)
     h_est_td = estimator.estimate_channel_td_corr(rx_am_a, am_ref)
-    # h_est_td = estimator.estimate_channel_td_corr(link.channel_out_a, am_ref)
+    # h_est_ls = estimator.estimate_channel_td_ls(rx_am_a, am_ref, tap_count=2003)
 
     if True:
         import matplotlib.pyplot as plt
         import numpy as np
 
-        # h_est, title = h_est_zf, 'impulse response (ZF)'
-        h_est, title = h_est_td, 'impulse response (TD)'
+        if True:
+            h_est, title = h_est_zf, 'impulse response (ZF)'
+            plt.figure(figsize=(10, 4))
+            plt.plot(np.real(h_est[0]), 'r', label='Real', alpha=0.7)
+            plt.plot(np.imag(h_est[0]), 'g', label='Imag', alpha=0.7)
+            #plt.plot(np.abs(h_est[0]), 'b', label='Magnitude (Abs)', alpha=0.7)
+            plt.title(title)
+            plt.grid(True, linestyle=':', alpha=0.7)
+            plt.legend()
+            plt.show(block=False)
+
+        if False:
+            # Note: TD has ringing from the shorter correlation window
+            h_est, title = h_est_td, 'impulse response (TD)'
+            plt.figure(figsize=(10, 4))
+            plt.plot(np.real(h_est[0]), 'r', label='Real', alpha=0.7)
+            plt.plot(np.imag(h_est[0]), 'g', label='Imag', alpha=0.7)
+            plt.plot(np.abs(h_est[0]), 'b', label='Magnitude (Abs)', alpha=0.7)
+            plt.title(title)
+            plt.grid(True, linestyle=':', alpha=0.7)
+            plt.legend()
+            plt.show(block=False)
+
         # h_est, title = h_est_ls, 'impulse response (LS)'
-
-        plt.figure(figsize=(10, 4))
-        plt.plot(np.real(h_est[0]), 'r', label='Real', alpha=0.7)
-        plt.plot(np.imag(h_est[0]), 'g', label='Imag', alpha=0.7)
-        plt.plot(np.abs(h_est[0]), 'b', label='Magnitude (Abs)', alpha=0.7)
-        plt.title(title)
-        plt.grid(True, linestyle=':', alpha=0.7)
-        plt.legend()
-        plt.show(block=False)
-
     breakpoint()
 
     if False:

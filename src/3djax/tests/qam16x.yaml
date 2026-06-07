@@ -63,10 +63,10 @@ tx:
   iq_imbalance:
     enable_iq_imb: True
     gain_db_mu: 0.0                  # 0.0 Ideally balanced
-    gain_db_sigma_max: 0.001           # [dB] 0.8 Variations in independent I vs Q analog driver paths
+    gain_db_sigma_max: 0.8           # [dB] 0.8 Variations in independent I vs Q analog driver paths
 
     phase_deg_mu: 0.0                # Ideally perfectly orthogonal (90 degrees)
-    phase_deg_sigma_max: 0.0         # [deg] 4.0 Deviation from quadrature orthogonality
+    phase_deg_sigma_max: 4.0         # [deg] 4.0 Deviation from quadrature orthogonality
 
   # ==== Tx Analog Front-End (AFE) Frequency Response & Package Parasitics
   afe_frequency_response:
@@ -84,14 +84,15 @@ tx:
   rf_driver:
     enable_mpm_volterra: True
     poly_order_k: 5                  # 5 Maximum odd non-linear order evaluated (Captures 3rd & 5th IMD)
-    memory_depth_m: 3                # 4 Number of past oversampled analog steps affecting the current state
+    memory_depth_m: 4                # 4 Number of past oversampled analog steps affecting the current state
 
     # Scaling factor for the AM/AM compression and AM/PM phase twisting
-    non_linear_coefficients_sigma: 0.001 # 0.15 Controls the variance/severity of the non-linear driver transfer curve
+    non_linear_coefficients_sigma: 0.1 # 0.15 Controls the variance/severity of the non-linear driver transfer curve
+                                        # 0.001 -> remove the mpm
 
     # Driver output back-off (OBO). Lower means driving harder into saturation.
-    input_backoff_db_min: 20.0        # 1.0 Heavily saturated driver, intense constellation warping
-    input_backoff_db_max: 20.0        # 6.0 High linearity back-off, lower SNR but cleaner symbols
+    input_backoff_db_min: 6.0        # 1.0 Heavily saturated driver, intense constellation warping
+    input_backoff_db_max: 6.0        # 6.0 High linearity back-off, lower SNR but cleaner symbols
                                       # 20.0 -> very linear, small signal region
 
   # ==== Electro-Optic Modulator (Mach-Zehnder Modulator) Physics
@@ -130,8 +131,8 @@ tx:
 #-----------------------------------------------
 
 channel: # RefDisRes (reflections, dispersion, resonance)
-  mode: 'ideal'  # ideal turn off everything in the channel except the SNR (AWGN)
-  #mode: 'physical'
+  #mode: 'ideal'  # ideal turn off everything in the channel except the SNR (AWGN)
+  mode: 'physical'
   # Broadband attenuation - pure trace loss
   insertion_loss_db_min: 10.0      # E.g., a short, high-quality chip-to-chip link
   insertion_loss_db_max: 35.0      # E.g., a long, lossy backplane channel
@@ -154,8 +155,8 @@ channel: # RefDisRes (reflections, dispersion, resonance)
   # Reflection Coefficient (Gamma) distribution.
   # Gamma represents the severity of the impedance mismatch (e.g., hitting a via or connector).
   gamma_mu: 0.0                  # Mean is 0 (ideally 50 ohms)
-  gamma_sigma_min: 0.02          # Standard deviation for a high-quality link
-  gamma_sigma_max: 0.08          # Standard deviation for a highly mismatched link
+  gamma_sigma_min: 0.07          # 0.02 Standard deviation for a high-quality link
+  gamma_sigma_max: 0.08          # 0.08 Standard deviation for a highly mismatched link
 
   # Absolute Distribution (Delay)
   # Forces all impedance boundaries to fall strictly within the equalizer's reachable window.
@@ -173,20 +174,21 @@ channel: # RefDisRes (reflections, dispersion, resonance)
   drift_tau_pct: 0.05           # 5% thermal variation on rise/fall times
   drift_weight_pct: 0.10        # 10% amplitude variation on reflections (voltage ripple)
 
-
   # ==== Via Stub Resonance (High-frequency ringing)
   # 0.0 means perfectly back-drilled via (no stub). 0.15 is a severe, deep notch.
-  stub_weight_min: 0.0
-  stub_weight_max: 0.0
+  stub_weight_min: 0.15
+  stub_weight_max: 0.15
 
   # Derivative Distortion (High-pass peaking) applies to the combined Raw Channel above
   # Simulates series capacitive coupling (e.g., AC coupling caps or gap parasitics).
   # Emphasizes the edges and high frequencies, fighting the RC smearing.
-  deriv_weight_min: 0.0          # 0.0 means a perfectly continuous DC path
+  deriv_weight_min: 0.10          # 0.0 means a perfectly continuous DC path
   deriv_weight_max: 0.15         # 0.15 injects significant high-frequency peaking
   f_res_ghz_min: 25.0
   f_res_ghz_max: 45.0
 
+  # ==== CHROMATIC DISPERSION
+  enable_chromatic_dispersion: True
 
   # =====
   # CROSSTALK (NEXT)
