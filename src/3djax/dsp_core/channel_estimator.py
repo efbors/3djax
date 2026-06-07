@@ -27,7 +27,9 @@ class ChannelEstimator:
         # Slice only the valid causal taps, completely discarding the wrap-around boundary errors
         h_est = h_full[:, :tap_count]
 
-        return h_est
+        h_roll = self.extract_centered_taps(h_est, pre_taps=10, post_taps=90)
+
+        return h_roll
 
     def estimate_channel_td_corr(self, rx_am, tx_ref):
         """
@@ -47,7 +49,9 @@ class ChannelEstimator:
         # Normalize by ZC energy
         h_est /= np.sum(np.abs(tx_ref) ** 2)
 
-        return h_est
+        h_roll = self.extract_centered_taps(h_est, pre_taps=10, post_taps=90)
+
+        return h_roll
 
     def estimate_channel_td_ls(self, rx_am, tx_ref, tap_count=64):
         """
@@ -88,26 +92,23 @@ class ChannelEstimator:
 
         return h_est_batch
 
-        # batch_size = rx_am.shape[0]
-        # tx_ref = np.squeeze(tx_ref)
-        # am_len = tx_ref.shape[0]
-        #
-        # # 1. Build the convolution matrix X [am_len, tap_count]
-        # # We use a trick: convolving reference with channel is the same as
-        # # multiplying the Toeplitz matrix of the reference by the channel vector.
-        # X = convolution_matrix(tx_ref, tap_count, mode='valid')
-        #
-        # # Since mode='valid' shortens the output, we must slice our received signal to match
-        # valid_len = X.shape[0]
-        #
-        # h_est_batch = np.zeros((batch_size, tap_count), dtype=np.complex128)
-        #
-        # # 2. Solve the Least Squares problem for each row in the batch
-        # # np.linalg.lstsq directly solves X * h = y minimizing the squared error
-        # # for i in range(batch_size):
-        # for i in range(1):
-        #     y_valid = rx_am[i, :valid_len]
-        #     h_est, residuals, rank, s = np.linalg.lstsq(X, y_valid, rcond=None)
-        #     h_est_batch[i] = h_est
-        #
-        # return h_est_batch
+    def extract_centered_taps(self, h_full, pre_taps=16, post_taps=48):
+        """
+        Extracts the linear impulse response from the circular ZF IFFT array.
+        """
+        # 1. Grab the precursor from the very end of the array
+        precursor = h_full[:, -pre_taps:]
+
+        # 2. Grab the main peak (index 0) and the postcursor
+        postcursor = h_full[:, :post_taps]
+
+        # 3. Concatenate them into a single linear filter
+        # The main spike will now sit exactly at index `pre_taps`
+        h_centered = np.concatenate((precursor, postcursor), axis=-1)
+
+        # Optional: Apply a windowing function to smoothly taper the edges to 0
+        # window = np.hanning(pre_taps + post_taps)
+        # h_centered = h_centered * window
+
+        return h_centered
+
