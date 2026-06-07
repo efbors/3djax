@@ -2,7 +2,7 @@ import numpy as np
 from utils.fft_convolve_same import fft_convolve_same
 from utils.bessel import generate_bessel_taps
 from utils.qam_mapper import get_qam_lut
-from utils.diagnostics import oqam_eye
+from utils.diagnostics import oqam_eye, find_best_phase_QAM16
 
 
 def generate_walsh_hadamard_am(length, lane_idx=0):
@@ -28,6 +28,18 @@ def generate_walsh_hadamard_am(length, lane_idx=0):
     return am_ref
 
 
+def generate_zadoff_chu_am(length, root_idx=1):
+    """Generates a Zadoff-Chu sequence of prime length."""
+    # Ideally, length should be a prime number (e.g., 251 instead of 256)
+    n = np.arange(length)
+
+    # Standard formula for odd-length ZC sequences
+    zc = np.exp(-1j * np.pi * root_idx * n * (n + 1) / length)
+
+    # Reshape to match the (1, length) batching format
+    return zc.reshape(1, -1).astype(np.complex64)
+
+
 class PhysicalTransmitter:
     def __init__(self, config):
         self.config = config
@@ -35,6 +47,8 @@ class PhysicalTransmitter:
         self.baud_rate = float(config['system']['baud_rate'])
         self.os_factor = int(config['system']['os_factor'])  # Analog OS (e.g., 8)
         self.T_ana = 1.0 / (self.baud_rate * self.os_factor)
+
+        self.am_type = config['system']['am_type']
         self.am_length_symbols = int(config['system']['am_length_symbols'])
 
         tx = config.get('tx', {})
@@ -50,11 +64,13 @@ class PhysicalTransmitter:
 
         # Clocking
         clock_cfg = tx.get('clocking', {})
+        self.enable_jitter_rms = clock_cfg['enable_jitter_rms']
         self.jitter_rms = np.random.uniform(clock_cfg.get('random_jitter_rms_fs_min'),
                                             clock_cfg.get('random_jitter_rms_fs_max')) * 1e-15
 
         # IQ Imbalance
         iq_cfg = tx.get('iq_imbalance', {})
+        self.enable_iq_imb = iq_cfg['enable_iq_imb']
         self.iq_gain_db = np.random.normal(iq_cfg.get('gain_db_mu'),
                                            iq_cfg.get('gain_db_sigma_max'))
         self.iq_phase_deg = np.random.normal(iq_cfg.get('phase_deg_mu'),
@@ -67,6 +83,10 @@ class PhysicalTransmitter:
 
         # Modulator
         mod_cfg = tx.get('modulator', {})
+
+        self.enable_mzm_nl = mod_cfg['enable_mzm_nl']  # Toggles np.sin() compression
+        self.enable_dc_imp = mod_cfg['enable_dc_imp']  # Toggles bias drift and ER floor
+
         self.vpp_vpi = np.random.uniform(mod_cfg.get('vpp_to_vpi_ratio_min'),
                                          mod_cfg.get('vpp_to_vpi_ratio_max'))
         self.bias_drift = np.random.uniform(mod_cfg.get('bias_drift_pct_min'),
@@ -81,10 +101,12 @@ class PhysicalTransmitter:
         # er_db = np.random.uniform(mod_cfg.get('extinction_ratio_db_min', 16.0),
         #                           mod_cfg.get('extinction_ratio_db_max', 28.0))
         #
+
         self.er_amp = 10 ** (-er_db / 20.0)
 
         # RF Driver / MPM
         rf_cfg = tx.get('rf_driver', {})
+        self.enable_mpm_volterra = rf_cfg['enable_mpm_volterra']
         self.mpm_k = rf_cfg.get('poly_order_k')
         self.mpm_m = rf_cfg.get('memory_depth_m')
         sigma_nl = rf_cfg.get('non_linear_coefficients_sigma')
@@ -95,6 +117,7 @@ class PhysicalTransmitter:
         # sigma_nl = rf_cfg.get('non_linear_coefficients_sigma', 0.15)
 
         # Generate MPM Coefficient Matrix (Memory Depth x Odd Orders)
+
         self.orders = np.arange(1, self.mpm_k + 1, 2)
         self.mpm_coeffs = np.random.normal(0, sigma_nl, size=(self.mpm_m, len(self.orders)))
         self.mpm_coeffs[0, 0] = 1.0  # Main instantaneous linear tap must be normalized to ~1.0
@@ -151,9 +174,14 @@ class PhysicalTransmitter:
         pre_pad = pad[:, :pre_pad_len]
         post_pad = pad[:, pre_pad_len:]
 
-        # Generate 256-symbol AM and Payload
-        am_ref_v = generate_walsh_hadamard_am(length=self.am_length_symbols, lane_idx=0)
-        # Apply standard Wi-Fi normalization to QPSK AM to match payload power
+        am_ref_v = generate_zadoff_chu_am(length=self.am_length_symbols, root_idx=1)
+        # if self.am_type == 'Zadoff-Chu':
+        #     # Generate ZC Alignment Marker
+        # else:  # WH - obsolete
+        #     # Generate 256-symbol AM and Payload
+        #     am_ref_v = generate_walsh_hadamard_am(length=self.am_length_symbols, lane_idx=0)
+
+        # Power normalization (ZC is  1.0 magnitude like qpsk, scale to match payload RMS if needed)
         am_ref_v *= (1.0 / np.sqrt(2))
         am_ref = np.tile(am_ref_v, (batch_size, 1))  # broadcast to batch size
 
@@ -163,7 +191,10 @@ class PhysicalTransmitter:
         syms = np.concatenate((pre_pad, am_ref, payload, post_pad), axis=1)
 
         # DAC Digital Domain (e.g. 200 GSa/s)
-        dac_out = self._step2_dac_digital_domain(syms)
+        # Calculate boundaries for the OQAM shift
+        payload_start_idx = pre_pad.shape[1] + am_ref.shape[1]
+        payload_end_idx = payload_start_idx + payload.shape[1]
+        dac_out = self._step2_dac_digital_domain(syms, payload_start_idx, payload_end_idx)
 
         # Electrical Analog (Simulation) Domain (e.g. 800 GSa/s)
         I_rf, Q_rf = self._step3_analog_domain(dac_out)
@@ -171,16 +202,13 @@ class PhysicalTransmitter:
         # Electro-Optic Domain (e.g. 800 GSa/s Complex Baseband)
         tx_optical_field = self._step4_modulator(I_rf, Q_rf)
 
-        if False:
-            # sig_to_show = I_rf + 1j * Q_rf
-            sig_to_show = tx_optical_field
-            os_factor = 8
-            s0 = 150
-            s1 = 6000
-            for ix in range(os_factor):
-                oqam_eye(sig_to_show[0, s0 + ix:s1], os_factor)
+        # convert the am ref to Fadc
+        am_ref_v = np.squeeze(am_ref_v)
+        am_len = am_ref_v.shape[-1]
+        am_ref_fsim = np.zeros(am_len * 2, dtype=np.complex64)  # assume Fadc = 2*Fbaud !!
+        am_ref_fsim[::2] = am_ref_v
 
-        return am_ref_v, tx_optical_field
+        return am_ref_fsim, tx_optical_field
 
     def _step1_generate_payload(self, batch_size, payload_symbols):
         """Generates random payload and maps to discrete QAM voltage levels."""
@@ -194,18 +222,33 @@ class PhysicalTransmitter:
         payload = I_payload + 1j * Q_payload
         return payload
 
-    def _step2_dac_digital_domain(self, syms):
-        """100Gbd to 200GSa/s (2x OS), OQAM Shift, and DAC Quantization."""
+    def _step2_dac_digital_domain(self, syms, payload_start_idx, payload_end_idx):
+        """100Gbd to 200GSa/s (2x OS), Selective OQAM Shift, and DAC Quantization."""
+
+        # Convert boundary indices to the 2x domain
+        start_2x = payload_start_idx * 2
+        end_2x = payload_end_idx * 2
 
         # Upsample to 2x (200 GSa/s)
         syms_2x = np.repeat(syms, 2, axis=1)
         I_2x = np.real(syms_2x)
         Q_2x = np.imag(syms_2x)
 
-        # Offset QAM (Shift Q by exactly 1 sample at 2x rate = T/2)
-        padding = np.zeros((I_2x.shape[0], 1))
-        I_oqam = np.concatenate((I_2x, padding), axis=1)
-        Q_oqam = np.concatenate((padding, Q_2x), axis=1)
+        # Apply OQAM Shift only to the payload section
+        # Delay the Q channel of the payload by 1 sample (T/2)
+        Q_payload = Q_2x[:, start_2x:end_2x]
+
+        # Take the last Q sample from the AM
+        last_am_sample = Q_2x[:, start_2x - 1:start_2x]
+
+        # Shift payload Q right by 1, pushing the last AM sample into the first slot,
+        # and dropping the last payload sample to keep length consistent
+        Q_payload_shifted = np.concatenate((last_am_sample, Q_payload[:, :-1]), axis=1)
+
+        # Reconstruct the full Q channel
+        I_oqam = I_2x  # I channel is unaffected
+        Q_oqam = Q_2x.copy()
+        Q_oqam[:, start_2x:end_2x] = Q_payload_shifted
 
         # PAPR Clipping
         clip_linear = 10 ** (self.clip_papr / 20.0)
@@ -234,9 +277,7 @@ class PhysicalTransmitter:
         I_8x = np.repeat(I_2x, analog_os, axis=1).astype(np.float32)
         Q_8x = np.repeat(Q_2x, analog_os, axis=1).astype(np.float32)
 
-        debug_enable_AM_jitter = True
-        print(f"jitter_rms: {self.jitter_rms}")
-        if debug_enable_AM_jitter:
+        if self.enable_jitter_rms:
             # Jitter Injection (Taylor Series Derivative Approximation)
             dt_jitter_I = np.random.normal(0, self.jitter_rms, I_8x.shape)
             dt_jitter_Q = np.random.normal(0, self.jitter_rms, Q_8x.shape)
@@ -253,8 +294,7 @@ class PhysicalTransmitter:
         Q_nl = np.zeros_like(Q_filt)
 
         # Generalized Volterra loop
-        enable_Volterra = True
-        if enable_Volterra:  # debug
+        if self.enable_mpm_volterra:  # debug
             for m in range(self.mpm_m):
                 I_del = np.roll(I_filt, shift=m, axis=1)
                 Q_del = np.roll(Q_filt, shift=m, axis=1)
@@ -278,25 +318,46 @@ class PhysicalTransmitter:
         return I_nl, Q_nl
 
     def _step4_modulator(self, I_nl, Q_nl):
-        """Apply Analog I/Q Imbalances and Electro-Optic Modulator sine curve."""
-        # I/Q Imbalance (Gain and Phase applied in continuous domain)
-        gain_lin = 10 ** (self.iq_gain_db / 20.0)
-        phase_rad = np.radians(self.iq_phase_deg)
 
-        # Gain mismatch (I is slightly larger, Q is slightly smaller)
-        I_imb = I_nl * np.sqrt(gain_lin)
+        if self.enable_iq_imb:
 
-        # Phase mismatch (Q bleeds into I)
-        Q_imb = (Q_nl * np.cos(phase_rad) - I_nl * np.sin(phase_rad)) / np.sqrt(gain_lin)
+            """Apply Analog I/Q Imbalances and Electro-Optic Modulator sine curve."""
+            # I/Q Imbalance (Gain and Phase applied in continuous domain)
+            gain_lin = 10 ** (self.iq_gain_db / 20.0)
+            phase_rad = np.radians(self.iq_phase_deg)
+
+            # Gain mismatch (I is slightly larger, Q is slightly smaller)
+            I_imb = I_nl * np.sqrt(gain_lin)
+            # Phase mismatch (Q bleeds into I)
+            Q_imb = (Q_nl * np.cos(phase_rad) - I_nl * np.sin(phase_rad)) / np.sqrt(gain_lin)
+        else:
+            I_imb = I_nl
+            Q_imb = Q_nl
 
         # Mach-Zehnder Modulator Transfer Function
         # Vpi normalized sine response: sin(V * Vpp/Vpi * pi/2 + bias_drift)
         theta_I = I_imb * self.vpp_vpi * (np.pi / 2) + (self.bias_drift * np.pi)
         theta_Q = Q_imb * self.vpp_vpi * (np.pi / 2) + (self.bias_drift * np.pi)
 
-        # Add Extinction Ratio floor (finite null depth)
-        I_opt = np.sin(theta_I) + self.er_amp
-        Q_opt = np.sin(theta_Q) + self.er_amp
+        # Non-Linear MZM Transfer Function and Extinction Ratio
+        er_floor = self.er_amp if self.enable_dc_imp else 0.0
+        if self.enable_mzm_nl:
+            # Add Extinction Ratio floor (finite null depth)
+            I_opt = np.sin(theta_I) + self.er_amp
+            Q_opt = np.sin(theta_Q) + self.er_amp
+        else:
+            # Pure linear small-signal approximation: sin(x) ≈ x
+            I_opt = theta_I + er_floor
+            Q_opt = theta_Q + er_floor
+
         modulator_out = (I_opt + 1j * Q_opt).astype(np.complex64)
+
+        if False:
+            sig_to_show = I_opt[0] + 1j * Q_opt[0]
+            best_phase = find_best_phase_QAM16(sig_to_show, os_factor=8)
+            oqam, os_factor, s0, s1 = True, 8, 16152, 20040
+            # for ix in range(os_factor):  # show all phases
+            #     oqam_eye(sig_to_show[s0 + ix:s1], os_factor, oqam)
+            oqam_eye(sig_to_show[s0 + best_phase:s1], os_factor, oqam)
 
         return modulator_out

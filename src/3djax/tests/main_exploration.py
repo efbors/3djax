@@ -2,11 +2,8 @@ import argparse
 import yaml
 import os
 from pathlib import Path
-
-
-from utils.plot_sig import plot_channel_batch
-
 from dsp_core.pipeline import CoherentPipeline
+from dsp_core.channel_estimator import ChannelEstimator
 
 
 def main():
@@ -32,6 +29,10 @@ def main():
     if 'Tsym' not in config['system']:
         config['system']['Tsym'] = Tsym  # baud rate (e.g. 100GHz)
 
+    # ==========================================
+    # HARDWARE SIMULATION
+    # ==========================================
+
     # Setup simulation constraints
     batch_size = 64
     num_payload_bits = 1944
@@ -39,9 +40,64 @@ def main():
     # Initialize the end-to-end coherent transceiver link
     link = CoherentPipeline(config, batch_size=batch_size)
 
-
     # Execute the signal path (Keep invariance off for rapid DSP bring-up)
-    rx_a, _, h_a, _ = link.process_batch(num_payload_bits, enable_invariance=False)
+    link.process_batch(num_payload_bits, enable_invariance=False)
+
+    # ==========================================
+    # RECEIVER DSP (Channel Estimation)
+    # ==========================================
+    rx_am_a = link.get_rx_am_a()
+    am_ref = link.am_ref
+
+    if False:
+        import scipy.signal as signal
+        import numpy as np
+        import matplotlib.pyplot as plt
+        am_len = am_ref.shape[-1]
+        am_ref_fsim = np.zeros(am_len * os_factor, dtype=np.complex64)
+        am_ref_fsim[::os_factor] = am_ref
+
+        tx_an = link.tx_analog[0]
+        corr_tx = signal.correlate(tx_an, am_ref_fsim, mode='same')
+
+        plt.figure(figsize=(10, 4))
+        plt.plot(np.abs(corr_tx))
+        plt.title("Tap 1: Tx Analog Impulse Response (800 GHz)")
+        plt.grid(True)
+        plt.show()
+
+        # 2. Tap 2: The Raw Channel Output
+        corr_chan = signal.correlate(link.channel_out_a[0], am_ref_fsim, mode='same')
+
+        plt.figure(figsize=(10, 4))
+        plt.plot(np.abs(corr_chan))
+        plt.title("Tap 2: Channel Output Impulse Response (800 GHz)")
+        plt.grid(True)
+        plt.show()
+
+    # Run the MMSE equivalent channel estimator
+    estimator = ChannelEstimator()
+    # h_est_zf = estimator.estimate_channel_fd_zf(rx_am_a, am_ref, tap_count=2003)
+    # h_est_ls = estimator.estimate_channel_td_ls(rx_am_a, am_ref, tap_count=2003)
+    h_est_td = estimator.estimate_channel_td_corr(rx_am_a, am_ref)
+    # h_est_td = estimator.estimate_channel_td_corr(link.channel_out_a, am_ref)
+
+    if True:
+        import matplotlib.pyplot as plt
+        import numpy as np
+
+        # h_est, title = h_est_zf, 'impulse response (ZF)'
+        h_est, title = h_est_td, 'impulse response (TD)'
+        # h_est, title = h_est_ls, 'impulse response (LS)'
+
+        plt.figure(figsize=(10, 4))
+        plt.plot(np.real(h_est[0]), 'r', label='Real', alpha=0.7)
+        plt.plot(np.imag(h_est[0]), 'g', label='Imag', alpha=0.7)
+        plt.plot(np.abs(h_est[0]), 'b', label='Magnitude (Abs)', alpha=0.7)
+        plt.title(title)
+        plt.grid(True, linestyle=':', alpha=0.7)
+        plt.legend()
+        plt.show(block=False)
 
     breakpoint()
 
@@ -49,7 +105,6 @@ def main():
         # ============================================
         # PLOT Time-Domain Analog Waveforms (Continuous-Time)
         import matplotlib.pyplot as plt
-        import numpy as np
 
         sig_analog = tx_analog[0, :].astype(np.complex64)
         plt.plot(np.real(sig_analog), 'r')
@@ -62,7 +117,7 @@ def main():
         # ===========================================
         # PLOT 2: Constellation Output - 8-Phase "Lazy" Downsampling Grid
         import matplotlib.pyplot as plt
-        import numpy as np
+
         sig_analog = tx_analog[0, :].astype(np.complex64)
         # Assuming sig_analog is your 800 GSa/s complex64 waveform
         sig_I = np.real(sig_analog)
@@ -162,8 +217,8 @@ def main():
         plt.grid()
         plt.show(block=False)
 
-    rx_afe = ReceiverAnalogFrontEnd(config)
-    rx_adc_out = rx_afe.process(channel_out)
+        rx_afe = ReceiverAnalogFrontEnd(config)
+        rx_adc_out = rx_afe.process(channel_out)
 
     # Batch Detect MA
     breakpoint()

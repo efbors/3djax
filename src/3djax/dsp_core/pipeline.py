@@ -1,8 +1,7 @@
-import numpy as np
 from dsp_core.trasmitter_qam import PhysicalTransmitter
 from channel.channel_refdisres import ChannelRefDisRes
 from dsp_core.rx_afe import RxAFE
-from utils.diagnostics import oqam_eye
+import numpy as np
 
 
 class CoherentPipeline:
@@ -10,9 +9,10 @@ class CoherentPipeline:
         self.config = config
         self.batch_size = batch_size
 
+        self.am_symbols_fadc = 2* self.config['system'].get('am_length_symbols')
         # Establish symmetric physical layer hardware modules
         self.tx = PhysicalTransmitter(config)
-        self.channel_medium = ChannelRefDisRes(config, B=batch_size)
+        self.channel = ChannelRefDisRes(config, B=batch_size)
         self.rx_afe = RxAFE(config)
 
     def process_batch(self, payload_bits, enable_invariance=False):
@@ -27,24 +27,41 @@ class CoherentPipeline:
         """
 
         # Transmitter
-        self.am_ref, tx_analog = self.tx.transmit_batch(
+        self.am_ref, self.tx_analog = self.tx.transmit_batch(
             batch_size=self.batch_size,
             payload_bits=payload_bits
         )
 
         # Synthesize physical channels for this specific transmission step
-        h_a, h_p = self.channel_medium.generate_batch()
+        self.h_a, self.h_p = self.channel.generate_batch()
         # Process main, Anchor Track (A)
-        channel_out_a = self.channel_medium.process(tx_analog, h_a)
+        self.channel_out_a = self.channel.process(self.tx_analog, self.h_a)
 
-        rx_adc_a = self.rx_afe.process(self.am_ref, channel_out_a)
+        self.rx_adc_a, self.am_start_indices_fx_a = self.rx_afe.process(self.am_ref, self.channel_out_a)
 
         # Process second, Invariant Track (P) if requested
         if enable_invariance:
-            channel_out_p = self.channel_medium.process(tx_analog, h_p)
-            rx_adc_p = self.rx_afe.process(self.am_ref, channel_out_p)
+            self.channel_out_p = self.channel.process(self.tx_analog, self.h_p)
+            self.rx_adc_p, self.am_start_indices_fx_p = self.rx_afe.process(self.am_ref, self.channel_out_p)
         else:
-            h_p = None
-            rx_adc_p = None
+            self.h_p = None
+            self.rx_adc_p = None
+            self.am_start_indices_fx_p = None
 
-        return rx_adc_a, rx_adc_p, h_a, h_p
+        return
+
+    def get_rx_am_a(self):
+        # Get the batch dimension
+        batch_size = self.rx_adc_a.shape[0]
+
+        # Create the row indexing vector: shape (n_batch, 1)
+        row_idx = np.arange(batch_size)[:, np.newaxis]
+
+        # Create the column extraction grid: shape (n_batch, am_symbols)
+        # Adds the base [0, 1, ..., am_len-1] array to each row's unique start index
+        col_idx = self.am_start_indices_fx_a[:, np.newaxis] + np.arange(self.am_symbols_fadc)
+
+        # Use advanced integer indexing to extract all rows simultaneously
+        rx_am_a = self.rx_adc_a[row_idx, col_idx]
+
+        return rx_am_a

@@ -15,17 +15,19 @@ def plot_time_domain(signal_800g, title="Time-Domain Waveform"):
     plt.show(block=False)
 
 
-import matplotlib.pyplot as plt
-import numpy as np
 
 
-def oqam_eye(signal_in, os_factor, title=''):
+def oqam_eye(signal_in, os_factor, oqam=False, title=''):
     """Undoes OQAM delay on Q and plots a single constellation canvas with a time-colored trend."""
-    sig_I = np.real(signal_in)
-    sig_Q = np.imag(signal_in)
+    sig_1d = signal_in.ravel()[-signal_in.shape[-1]:]
+    sig_I = np.real(sig_1d)
+    sig_Q = np.imag(sig_1d)
 
     # Undo OQAM shift: Roll Q backwards by T/2 (OS // 2) along the sample axis
-    sig_Q_realigned = np.roll(sig_Q, shift=-(os_factor // 2), axis=-1)
+    if oqam:
+        sig_Q_realigned = np.roll(sig_Q, shift=-(os_factor // 2), axis=-1)
+    else:
+        sig_Q_realigned = sig_Q
     sigal = sig_I + 1j * sig_Q_realigned
 
     # Keep your preferred fig, ax style but setup a single square canvas
@@ -68,3 +70,31 @@ def oqam_eye(signal_in, os_factor, title=''):
 
     plt.tight_layout()
     plt.show(block=False)
+
+
+def find_best_phase_QAM16(sig, os_factor=8):
+    errors = []
+
+    for p in range(os_factor):
+        # 1. Downsample to 1 sample per symbol for this phase
+        samples = sig[p::os_factor]
+
+        # 2. Crude AGC: Normalize so the signal fits an ideal QAM16 grid
+        # QAM16 ideal levels are ±1, ±3. The RMS power of this grid is exactly sqrt(10).
+        rms_current = np.sqrt(np.mean(np.abs(samples) ** 2))
+        if rms_current == 0:
+            errors.append(float('inf'))
+            continue
+
+        samples_norm = samples * (np.sqrt(10) / rms_current)
+
+        # 3. Slice to nearest ideal QAM16 levels (-3, -1, 1, 3)
+        I_sliced = np.clip(np.round((np.real(samples_norm) + 3) / 2) * 2 - 3, -3, 3)
+        Q_sliced = np.clip(np.round((np.imag(samples_norm) + 3) / 2) * 2 - 3, -3, 3)
+        ideal_symbols = I_sliced + 1j * Q_sliced
+
+        # 4. Calculate error (distance from actual dots to ideal grid)
+        error = np.mean(np.abs(samples_norm - ideal_symbols) ** 2)
+        errors.append(error)
+
+    return np.argmin(errors)

@@ -2,7 +2,7 @@ import numpy as np
 from utils.fft_convolve_same import fft_convolve_same
 from utils.bessel import generate_bessel_taps
 from utils.qam_mapper import get_qam_lut
-from utils.diagnostics import oqam_eye
+from utils.diagnostics import oqam_eye, find_best_phase_QAM16, plot_time_domain
 
 
 # Assumes generate_bessel_taps and fft_convolve_same are available
@@ -19,6 +19,8 @@ class RxAFE:
         self.modulation = config['system']['modulation']
         _, _, self.bits_per_ch = get_qam_lut(self.modulation)
         self.payload_symbols = self.payload_bits // (2 * self.bits_per_ch)
+
+        self.am_type = config['system']['am_type']
         self.am_symbols = self.config['system'].get('am_length_symbols')
 
         self.fs_analog = self.baud_rate * self.os_analog
@@ -84,6 +86,12 @@ class RxAFE:
         self.dac_grid_I = self._generate_quantization_grid()
         self.dac_grid_Q = self._generate_quantization_grid()
 
+        # Generate the split 256-point taper (Hann window)
+        # np.hanning(256) fades from 0 to 1 over 128 samples, then 1 to 0 over 128 samples.
+        taper = np.hanning(256)
+        self.fade_in = taper[:128]
+        self.fade_out = taper[128:]
+
     def _generate_quantization_grid(self):
         """Generates static INL/DNL voltage map for an ADC."""
         levels = 2 ** self.enob
@@ -128,52 +136,57 @@ class RxAFE:
         agc_gain = self.agc_target / np.clip(rms_power, 1e-6, None)
         rx_agc_sim = rx_filt * agc_gain  # at Fsim
 
+        # Apply the taper to the batch boundaries
+        rx_agc_sim[:, :128] *= self.fade_in
+        rx_agc_sim[:, -128:] *= self.fade_out
+
         # Find timing alignment in the Fsim domain (e.g.  800Gs/s)
         am_start_indices = self._detect_timing(self.os_analog, am_ref, rx_agc_sim)
-        am_start_indices -= 2  # from the AM being even and OQAM Center of Mass (Q is delayed by T/2)
 
-        if False:
-            sig_to_show = rx_agc_sim
-            os_factor = 8
-            s0 = am_start_indices[0]
-            s1 = 15000
-            for ix in range(os_factor):
-                oqam_eye(sig_to_show[0, s0 + ix:s1], os_factor)
+        # The alignment indices are in the Fsim domain;  rotate by the fractional
+        # amount to land each signal aligned on the Fadc grid ( less than Fsim//Fadc)
+        fractional_am_shifts = am_start_indices % self.downsample_ratio
 
-        # Extract the sub-ADC sampling phase; fractional in (0,1,...Fsim/Fadc)
-        # This guarantees the AM peak lands exactly on the decimation grid.
-        sub_adc_shifts = am_start_indices % self.downsample_ratio
-
-        # 3. Build the decimation extraction grid
+        # Build the decimation extraction grid
         # base_grid is [0, 4, 8, 12, ...]
         N_fsim = rx_agc_sim.shape[1]
+
+        # Perform the full floating-point alignment in one FFT operation
+        # am_start_fp is the precise fractional (on the Fadc) floating point peak (e.g., 3.7)
+        # Shift amount is negative to pull the wave left towards the integer grid zero-phase
+        shift_amount = -fractional_am_shifts
+
+        freqs = np.fft.fftfreq(N_fsim)
+        phase_ramp = np.exp(-1j * 2 * np.pi * freqs * shift_amount[:, np.newaxis])
+
+        rx_fft = np.fft.fft(rx_agc_sim, axis=1)
+        rx_agc_aligned = np.fft.ifft(rx_fft * phase_ramp, axis=1)
+
+        # Decimate directly from the zero-phase grid
         N_fadc = N_fsim // self.downsample_ratio
+        extraction_grid = np.arange(N_fadc) * self.downsample_ratio
 
-        # Build the decimation extraction grid to the correct downsampled size
-        base_grid = np.arange(N_fadc) * self.downsample_ratio
-        # Stagger the starting phase of each row by its fractional shift.
-        # This does NOT erase the bulk delay.
-        extraction_grid = sub_adc_shifts[:, np.newaxis] + base_grid
-
-        # Safe circular wrap-around (just in case the extraction grid clips the far edge)
-
-        extraction_grid = extraction_grid % N_fsim
-
-        # Extract and decimate in one single, highly-optimized step
-        rx_agc = np.take_along_axis(rx_agc_sim, extraction_grid, axis=1)
-
-        # Metadata: Calculate the EXACT starting index for each row in the 2x tensor
-        # Because we didn't artificially align the rows, these integers will be DIFFERENT
-        # for each row based on the channel's absolute delay!
-        am_start_indices_fadc_int = (am_start_indices - sub_adc_shifts) // self.downsample_ratio
-
-        # Ground truth metadata for downstream timing recovery algorithms
-        am_start_indices_fadc_float = am_start_indices / self.downsample_ratio
+        # Broadcast the 1D extraction grid across the 2D batch
+        rx_agc = rx_agc_aligned[:, extraction_grid]
+        am_start_indices_fx = (am_start_indices // self.downsample_ratio).astype(np.int32)
 
         if False:
-            # Dynamically plot starting from exactly where the AM landed for row 0
-            s0_fadc = int(am_start_indices_fadc_int[0])
-            oqam_eye(rx_agc[0, s0_fadc: s0_fadc + 2000], os_factor=2, title="Timing Accurate (200 GSa/s)")
+            # Check rx signal before ADC impairments
+            # Plot the AM ZC
+            sig_to_show = rx_agc[0]
+            s0 = am_start_indices_fx[0]
+            s1 = s0 + 4000
+            oqam, os_factor = False, 2
+            oqam_eye(sig_to_show[s0 - 1:s1], os_factor, oqam)
+            oqam_eye(sig_to_show[s0:s1], os_factor, oqam)
+            oqam_eye(sig_to_show[s0 + 1:s1], os_factor, oqam)
+            # Plot the QAM16 payload
+            s0 = am_start_indices_fx[0] + 4006
+            s1 = s0 + 900
+            oqam, os_factor = True, 2
+            oqam_eye(sig_to_show[s0 - 1:s1], os_factor, oqam)
+            oqam_eye(sig_to_show[s0:s1], os_factor, oqam, title="Timing Accurate (200 GSa/s)")
+            oqam_eye(sig_to_show[s0 + 1:s1], os_factor, oqam)
 
         I_agc = np.real(rx_agc)
         Q_agc = np.imag(rx_agc)
@@ -211,12 +224,26 @@ class RxAFE:
 
         # Recombine into complex 200 GSa/s output
         rx_adc_out = (I_out + 1j * Q_out).astype(np.complex64)
-        if True:
-            # Dynamically plot starting from exactly where the AM landed for row 0
-            s0_fadc = int(am_start_indices_fadc_int[0])
-            oqam_eye(rx_adc_out[0, s0_fadc: s0_fadc + 2000], os_factor=2, title="Timing Accurate (200 GSa/s)")
 
-        return rx_adc_out
+        if False:
+            # Plot the output of the Receiver chain at Fadc=100;  timing is aligned
+            # Plot the AM ZC
+            sig_to_show = rx_adc_out[0]
+            s0 = am_start_indices_fx[0]
+            s1 = s0 + 4000
+            oqam, os_factor = False, 2
+            oqam_eye(sig_to_show[s0 - 1:s1], os_factor, oqam)
+            oqam_eye(sig_to_show[s0:s1], os_factor, oqam)
+            oqam_eye(sig_to_show[s0 + 1:s1], os_factor, oqam)
+            # Plot the QAM16 payload
+            s0 = am_start_indices_fx[0] + 4006
+            s1 = s0 + 900
+            oqam, os_factor = True, 2
+            oqam_eye(sig_to_show[s0 - 1:s1], os_factor, oqam)
+            oqam_eye(sig_to_show[s0:s1], os_factor, oqam, title="Timing Accurate (200 GSa/s)")
+            oqam_eye(sig_to_show[s0 + 1:s1], os_factor, oqam)
+
+        return rx_adc_out, am_start_indices_fx
 
     def _detect_timing(self, os_factor, am_ref, rx_agc):
         """
@@ -243,9 +270,39 @@ class RxAFE:
         # Extract the index of the maximum correlation peak per row
         peak_indices = np.argmax(np.abs(corr), axis=-1)
 
+        # Clip the integer peaks to prevent IndexError.
+        max_idx = corr.shape[-1] - 1
+        m_safe = np.clip(peak_indices, 1, max_idx - 1)
+
+        # --- Parabolic interpolation of the peak abscissa
+        # Extract the peak and its immediate neighbors across the batch
+        row_idx = np.arange(batch_size)
+        y_minus1 = np.abs(corr[row_idx, m_safe - 1])
+        y_0 = np.abs(corr[row_idx, m_safe])
+        y_plus1 = np.abs(corr[row_idx, m_safe + 1])
+
+        # Calculate the fractional offset (delta)
+        # A small epsilon (1e-12) is added to the denominator to prevent a
+        # ZeroDivisionError in the unlikely event of a perfectly flat peak.
+        numerator = y_plus1 - y_minus1
+        denominator = 2 * y_0 - y_plus1 - y_minus1 + 1e-12
+        delta = 0.5 * (numerator / denominator)
+
+        # Compute the final floating-point alignment indices
+        peak_indices_fp = m_safe + delta
+
         # Shift the peak back to the true start of the frame (Index 0 of the AM)
         # The 'same' convolution delays the peak by exactly half the filter length
         center_offset = filter_len // 2
-        start_indices = peak_indices - center_offset
+        start_indices = peak_indices_fp - center_offset
+
+        if False:
+            import matplotlib.pyplot as plt
+            plt.figure(figsize=(10, 4))
+            plt.plot(np.abs(corr[0]), 'b', label='Magnitude (Abs)', alpha=0.5)
+            plt.title('correlation with ZC AM')
+            plt.grid(True, linestyle=':', alpha=0.5)
+            plt.legend()
+            plt.show(block=False)
 
         return start_indices
