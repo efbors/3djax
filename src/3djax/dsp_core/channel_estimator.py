@@ -13,6 +13,7 @@ class ChannelEstimator:
         tx_ref: Ideal Tx ZC sequence [am_len]
         """
         tx_ref = np.squeeze(tx_ref)
+        N_zc = len(tx_ref)
 
         # FFT of received and reference
         Y = np.fft.fft(rx_am, axis=-1)
@@ -29,7 +30,9 @@ class ChannelEstimator:
 
         h_roll = self.extract_centered_taps(h_est, pre_taps=10, post_taps=90)
 
-        return h_roll
+        snr_linear_est = self.estimate_snr(rx_am, h_est, N_zc)
+
+        return h_roll, snr_linear_est
 
     def estimate_channel_td_corr(self, rx_am, tx_ref):
         """
@@ -112,3 +115,20 @@ class ChannelEstimator:
 
         return h_centered
 
+    def estimate_snr(self, rx_am, h_full, N_zc):
+
+        #  Slice the "dead zone" from the circular ZF h_full array
+        # Make sure this is far away from the precursor and postcursor
+        noise_tail = h_full[:, 500:1500]
+
+        # 2. Calculate the variance of this noise
+        # Note: Because ZF divides by the ZC spectrum (processing gain N=2003),
+        # the noise in the estimate is suppressed. We multiply by N to find the true physical noise power.
+        noise_power_est = np.var(noise_tail) * N_zc
+
+        # 3. Calculate total signal power from the raw received ZC waveform
+        signal_power_est = np.var(rx_am)
+
+        # 4. True SNR (Linear)
+        snr_linear_est = signal_power_est / noise_power_est
+        return snr_linear_est
